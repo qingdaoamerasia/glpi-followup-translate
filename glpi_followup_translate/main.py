@@ -218,8 +218,13 @@ def extract_original_text(content: str, prefix: str) -> str:
 
 
 def build_translated_content(original: str, translated: str, prefix: str) -> str:
-    """Build content preserving original and adding translation (for description/followup)."""
-    return f"{original}<br>\n{prefix}<br>\n{translated}"
+    """Build content preserving original and adding translation (for description/followup).
+
+    Format: original + two newlines + prefix + newline + translated.
+    GLPI's API stores content with literal \\n which renders as line breaks.
+    Using \\n (not OS-dependent) ensures cross-platform consistency.
+    """
+    return f"{original}\n\n{prefix}\n{translated}"
 
 
 def build_translated_title(original: str, translated: str) -> str:
