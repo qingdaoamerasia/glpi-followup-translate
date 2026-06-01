@@ -1,13 +1,15 @@
 """Main daemon loop for GLPI Followup Translate."""
 
 import argparse
+import hashlib
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import time
-from typing import Set
+from typing import Set, Optional
 
 from langdetect import detect, LangDetectException
 
@@ -16,6 +18,18 @@ from .glpi_client import GlpiClient
 from .ollama_client import OllamaClient
 
 logger = logging.getLogger("glpi_followup_translate")
+
+# HTML tag pattern for stripping
+_HTML_RE = re.compile(r"<[^>]*>")
+
+
+def strip_html(text: str) -> str:
+    """Remove HTML tags and HTML entities from text."""
+    text = _HTML_RE.sub("", text)
+    # Decode common HTML entities
+    text = text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+    text = text.replace("&quot;", '"').replace("&#39;", "'").replace("&nbsp;", " ")
+    return text.strip()
 
 # Graceful shutdown flag
 _shutdown = False
@@ -53,22 +67,48 @@ def setup_logging(config: AppConfig) -> None:
 
 
 class ProcessedState:
-    """Track which items have been processed to avoid re-translation."""
+    """Track which items have been processed to avoid re-translation.
+
+    Uses content hashes so that if content changes, the item is retried.
+    """
 
     def __init__(self, state_file: str = "processed_state.json"):
         self.state_file = state_file
-        self.processed_followups: Set[int] = set()
-        self.processed_tickets: Set[int] = set()
+        # Maps followup_id -> content hash
+        self.processed_followups: dict[int, str] = {}
+        # Maps ticket_id -> (name_hash, content_hash)
+        self.processed_tickets: dict[int, tuple[str, str]] = {}
         self._load()
 
     def _load(self) -> None:
-        """Load processed IDs from file."""
+        """Load processed data from file."""
         if os.path.exists(self.state_file):
             try:
                 with open(self.state_file, "r") as f:
                     data = json.load(f)
-                    self.processed_followups = set(data.get("followups", []))
-                    self.processed_tickets = set(data.get("tickets", []))
+                    # Handle old format (list of IDs) and new format (dict with hashes)
+                    raw_fu = data.get("followups", [])
+                    if isinstance(raw_fu, list):
+                        # Old format: list of IDs, convert to dict with empty hashes
+                        self.processed_followups = {
+                            int(k): "" for k in raw_fu if isinstance(k, (int, str))
+                        }
+                    else:
+                        self.processed_followups = {
+                            int(k): str(v) for k, v in raw_fu.items()
+                        }
+                    raw_tickets = data.get("tickets", [])
+                    if isinstance(raw_tickets, list):
+                        self.processed_tickets = {
+                            int(k): ("", "") for k in raw_tickets if isinstance(k, (int, str))
+                        }
+                    else:
+                        self.processed_tickets = {}
+                        for k, v in raw_tickets.items():
+                            if isinstance(v, list) and len(v) == 2:
+                                self.processed_tickets[int(k)] = (str(v[0]), str(v[1]))
+                            else:
+                                self.processed_tickets[int(k)] = ("", "")
                 logger.info(
                     "Loaded state: %d followups, %d tickets",
                     len(self.processed_followups),
@@ -78,35 +118,61 @@ class ProcessedState:
                 logger.warning("Failed to load state file, starting fresh: %s", e)
 
     def save(self) -> None:
-        """Save processed IDs to file."""
+        """Save processed data to file."""
         try:
             with open(self.state_file, "w") as f:
                 json.dump(
                     {
-                        "followups": list(self.processed_followups),
-                        "tickets": list(self.processed_tickets),
+                        "followups": {str(k): v for k, v in self.processed_followups.items()},
+                        "tickets": {
+                            str(k): [v[0], v[1]]
+                            for k, v in self.processed_tickets.items()
+                        },
                     },
                     f,
                 )
         except IOError as e:
             logger.error("Failed to save state file: %s", e)
 
-    def is_followup_processed(self, followup_id: int) -> bool:
-        return followup_id in self.processed_followups
+    def _content_hash(self, text: str) -> str:
+        """Compute a short hash of the content."""
+        return hashlib.md5(text.encode("utf-8")).hexdigest()[:12]
 
-    def mark_followup_processed(self, followup_id: int) -> None:
-        self.processed_followups.add(followup_id)
+    def is_followup_processed(self, followup_id: int, content: str) -> bool:
+        """Check if a followup has been processed with the same content."""
+        if followup_id not in self.processed_followups:
+            return False
+        old_hash = self.processed_followups[followup_id]
+        new_hash = self._content_hash(content)
+        return old_hash == new_hash
 
-    def is_ticket_processed(self, ticket_id: int) -> bool:
-        return ticket_id in self.processed_tickets
+    def mark_followup_processed(self, followup_id: int, content: str) -> None:
+        """Mark a followup as processed with its current content."""
+        self.processed_followups[followup_id] = self._content_hash(content)
 
-    def mark_ticket_processed(self, ticket_id: int) -> None:
-        self.processed_tickets.add(ticket_id)
+    def is_ticket_processed(self, ticket_id: int, name: str, content: str) -> bool:
+        """Check if a ticket has been processed with the same name and content."""
+        if ticket_id not in self.processed_tickets:
+            return False
+        old_names_hash, old_content_hash = self.processed_tickets[ticket_id]
+        return (
+            old_names_hash == self._content_hash(name)
+            and old_content_hash == self._content_hash(content)
+        )
+
+    def mark_ticket_processed(self, ticket_id: int, name: str, content: str) -> None:
+        """Mark a ticket as processed with its current name and content."""
+        self.processed_tickets[ticket_id] = (
+            self._content_hash(name),
+            self._content_hash(content),
+        )
 
     def cleanup_followups(self, valid_ids: Set[int]) -> None:
         """Remove followup IDs that no longer exist."""
         before = len(self.processed_followups)
-        self.processed_followups &= valid_ids
+        self.processed_followups = {
+            k: v for k, v in self.processed_followups.items() if k in valid_ids
+        }
         removed = before - len(self.processed_followups)
         if removed:
             logger.info("Cleaned up %d stale followup entries", removed)
@@ -114,7 +180,9 @@ class ProcessedState:
     def cleanup_tickets(self, valid_ids: Set[int]) -> None:
         """Remove ticket IDs that no longer exist."""
         before = len(self.processed_tickets)
-        self.processed_tickets &= valid_ids
+        self.processed_tickets = {
+            k: v for k, v in self.processed_tickets.items() if k in valid_ids
+        }
         removed = before - len(self.processed_tickets)
         if removed:
             logger.info("Cleaned up %d stale ticket entries", removed)
@@ -160,7 +228,7 @@ def process_text(
     item_type: str,
     config: AppConfig,
     ollama: OllamaClient,
-) -> str | None:
+) -> Optional[str]:
     """Process a text for translation.
 
     Args:
@@ -173,15 +241,18 @@ def process_text(
     Returns:
         Translated text if translation was needed, None otherwise
     """
-    if not text or len(text.strip()) < config.translation.min_text_length:
+    # Strip HTML tags for language detection and length check
+    plain_text = strip_html(text)
+
+    if not plain_text or len(plain_text) < config.translation.min_text_length:
         return None
 
     # Skip if already translated
     if is_already_translated(text, config.translation.prefix):
         return None
 
-    # Detect language
-    source_lang = detect_language(text)
+    # Detect language using plain text (no HTML)
+    source_lang = detect_language(plain_text)
     logger.debug("%s %d detected language: %s", item_type, item_id, source_lang)
 
     # Check if it's a language we should translate
@@ -195,17 +266,17 @@ def process_text(
         )
         return None
 
-    # Translate
+    # Translate using plain text
     logger.info(
         "Translating %s %d (%s -> %s): %s...",
         item_type,
         item_id,
         source_lang,
         target_lang,
-        text[:80],
+        plain_text[:80],
     )
 
-    translated = ollama.translate(text, source_lang, target_lang)
+    translated = ollama.translate(plain_text, source_lang, target_lang)
     if not translated:
         logger.warning("Translation failed for %s %d", item_type, item_id)
         return None
@@ -229,17 +300,23 @@ def process_followup(
     followup_id = followup.get("id")
     content = followup.get("content", "").strip()
 
-    if not followup_id or not content:
+    if not followup_id:
         return False
 
-    # Skip if already processed
-    if state.is_followup_processed(followup_id):
+    # Skip if already processed with same content
+    if state.is_followup_processed(followup_id, content):
+        return False
+
+    # Skip if already contains translation (content changed after translation, safe to skip)
+    if is_already_translated(content, config.translation.prefix):
+        state.mark_followup_processed(followup_id, content)
         return False
 
     # Process translation
     translated = process_text(content, followup_id, "followup", config, ollama)
     if not translated:
-        state.mark_followup_processed(followup_id)
+        # Content unchanged, no translation needed. Mark to avoid re-checking.
+        state.mark_followup_processed(followup_id, content)
         return False
 
     # Build new content preserving original
@@ -249,7 +326,7 @@ def process_followup(
     try:
         glpi.update_followup(ticket_id, followup_id, new_content)
         logger.info("Followup %d translated and updated successfully", followup_id)
-        state.mark_followup_processed(followup_id)
+        state.mark_followup_processed(followup_id, new_content)
         state.save()
         return True
     except Exception as e:
@@ -273,27 +350,27 @@ def process_ticket(
     if not ticket_id:
         return False
 
-    # Skip if already processed
-    if state.is_ticket_processed(ticket_id):
-        return False
-
     name = ticket.get("name", "").strip()
     content = ticket.get("content", "").strip()
+
+    # Skip if already processed with same content
+    if state.is_ticket_processed(ticket_id, name, content):
+        return False
 
     translated_name = None
     translated_content = None
 
-    # Translate name if needed
-    if name:
+    # Translate name if needed (skip if already translated)
+    if name and not is_already_translated(name, config.translation.prefix):
         translated_name = process_text(name, ticket_id, "ticket_name", config, ollama)
 
-    # Translate content if needed
-    if content:
+    # Translate content if needed (skip if already translated)
+    if content and not is_already_translated(content, config.translation.prefix):
         translated_content = process_text(content, ticket_id, "ticket_content", config, ollama)
 
-    # If nothing to translate, mark as processed
+    # If nothing to translate, mark current state and skip
     if not translated_name and not translated_content:
-        state.mark_ticket_processed(ticket_id)
+        state.mark_ticket_processed(ticket_id, name, content)
         return False
 
     # Build update fields
@@ -311,7 +388,13 @@ def process_ticket(
     try:
         glpi.update_ticket(ticket_id, **update_fields)
         logger.info("Ticket %d translated and updated successfully", ticket_id)
-        state.mark_ticket_processed(ticket_id)
+        # Re-read to get the actual new state
+        new_ticket = glpi.get_ticket(ticket_id)
+        state.mark_ticket_processed(
+            ticket_id,
+            new_ticket.get("name", "").strip(),
+            new_ticket.get("content", "").strip(),
+        )
         state.save()
         return True
     except Exception as e:
@@ -354,7 +437,11 @@ def run_once(
         ticket_result = process_ticket(ticket, config, glpi, ollama, state)
         if ticket_result:
             stats["tickets_translated"] += 1
-        elif not state.is_ticket_processed(ticket_id):
+        elif state.is_ticket_processed(
+            ticket_id,
+            ticket.get("name", "").strip(),
+            ticket.get("content", "").strip(),
+        ):
             stats["tickets_skipped"] += 1
 
         # Process followups
@@ -365,10 +452,11 @@ def run_once(
             continue
 
         for followup in followups:
+            followup_id = followup.get("id", 0)
             result = process_followup(followup, ticket_id, config, glpi, ollama, state)
             if result:
                 stats["followups_translated"] += 1
-            elif not state.is_followup_processed(followup.get("id", 0)):
+            elif followup_id and state.is_followup_processed(followup_id, followup.get("content", "")):
                 stats["followups_skipped"] += 1
 
     # Periodic cleanup
