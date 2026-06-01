@@ -1,0 +1,49 @@
+# GLPI Followup Translate - Configuration Template
+# Copy this file to config.yaml and fill in your actual values.
+
+glpi:
+  # GLPI API base URL
+  api_url: "http://your-glpi-server/api.php/v2.3"
+
+  # OAuth2 credentials (Client Credentials flow)
+  client_id: "your_client_id_here"
+  client_secret: "your_client_secret_here"
+
+ollama:
+  # Ollama API base URL
+  api_url: "http://localhost:11434"
+
+  # Model name for translation
+  model: "kaelri/hy-mt2:1.8b"
+
+  # Ollama request timeout in seconds
+  timeout: 60
+
+# Polling settings
+polling:
+  # Interval in seconds between each check for new followups
+  interval: 60
+
+# Translation settings
+translation:
+  # Prefix added to translated followup text
+  prefix: "[AUTO-TRANSLATED]"
+
+  # Minimum text length (characters) to trigger translation
+  min_text_length: 10
+
+  # Supported language pairs
+  # zh-cn -> en, en -> zh-cn
+  source_languages:
+    - "zh-cn"
+    - "zh"
+    - "en"
+  target_language:
+    zh-cn: "en"
+    zh: "en"
+    en: "zh-cn"
+
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  file: "glpi-translate.log"
