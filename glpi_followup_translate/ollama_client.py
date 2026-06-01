@@ -48,13 +48,17 @@ class OllamaClient:
             logger.error("Ollama not available: %s", e)
             return False
 
-    def translate(self, text: str, source_lang: str, target_lang: str) -> Optional[str]:
+    def translate(
+        self, text: str, source_lang: str, target_lang: str,
+        preserve_html: bool = False,
+    ) -> Optional[str]:
         """Translate text using Ollama LLM.
 
         Args:
             text: Text to translate
             source_lang: Source language code (e.g., 'zh-cn', 'en')
             target_lang: Target language code (e.g., 'en', 'zh-cn')
+            preserve_html: If True, preserve all HTML tags; only translate text content
 
         Returns:
             Translated text, or None if translation failed
@@ -67,11 +71,22 @@ class OllamaClient:
         src_name = lang_names.get(source_lang, source_lang)
         tgt_name = lang_names.get(target_lang, target_lang)
 
-        prompt = (
-            f"Translate the following text from {src_name} to {tgt_name}. "
-            f"Return ONLY the translated text, no explanations or notes.\n\n"
-            f"Text to translate:\n{text}"
-        )
+        if preserve_html:
+            prompt = (
+                f"Translate the following HTML content from {src_name} to {tgt_name}. "
+                f"IMPORTANT: Preserve ALL HTML tags, attributes, and structure "
+                f"exactly as they are - keep every <tag> unchanged. "
+                f"Only translate the visible text content between tags. "
+                f"Do NOT add new tags, remove tags, or change tag attributes. "
+                f"Return ONLY the translated HTML, no explanations or notes.\n\n"
+                f"HTML to translate:\n{text}"
+            )
+        else:
+            prompt = (
+                f"Translate the following text from {src_name} to {tgt_name}. "
+                f"Return ONLY the translated text, no explanations or notes.\n\n"
+                f"Text to translate:\n{text}"
+            )
 
         try:
             logger.debug(

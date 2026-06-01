@@ -217,14 +217,52 @@ def extract_original_text(content: str, prefix: str) -> str:
     return content.strip()
 
 
-def build_translated_content(original: str, translated: str, prefix: str) -> str:
-    """Build content preserving original and adding translation (for description/followup).
+def has_html_tags(text: str) -> bool:
+    """Check if text contains HTML tags."""
+    return bool(_HTML_RE.search(text))
 
-    Format: original + two newlines + prefix + newline + translated.
-    GLPI's API stores content with literal \\n which renders as line breaks.
-    Using \\n (not OS-dependent) ensures cross-platform consistency.
+
+def extract_outer_tag(html: str) -> str:
+    """Extract the outermost HTML block tag from content.
+
+    If the content is wrapped in a structural tag like <p>, <div>, etc.,
+    return that tag name. Otherwise return None to indicate plain text.
     """
-    return f"{original}\n\n{prefix}\n{translated}"
+    stripped = html.strip()
+    match = re.match(r'^<(\w+)[^>]*>', stripped, re.IGNORECASE)
+    if not match:
+        return None
+    tag = match.group(1).lower()
+    # Only consider structural/block-level tags for wrapping
+    if tag in ("p", "div", "span", "section", "article", "blockquote", "pre"):
+        return tag
+    return None
+
+
+def build_translated_content(original: str, translated: str, prefix: str) -> str:
+    """Build content preserving original and adding translation.
+
+    For rich text (contains HTML): uses <br> tags so line breaks render
+    correctly in GLPI's HTML editor. The translated text already has HTML
+    tags preserved by the LLM, so no extra wrapping is needed.
+
+    For plain text: uses literal \\n for cross-platform line breaks.
+    """
+    if has_html_tags(original):
+        # Rich text: use <br> for line breaks
+        # translated text should already have HTML preserved from the LLM
+        outer_tag = extract_outer_tag(original)
+        tag = outer_tag if outer_tag else "p"
+        return (
+            f"{original}"
+            f"<br><br>"
+            f"<{tag}><strong>{prefix}</strong></{tag}>"
+            f"<br>"
+            f"{translated}"
+        )
+    else:
+        # Plain text: use literal newlines
+        return f"{original}\n\n{prefix}\n{translated}"
 
 
 def build_translated_title(original: str, translated: str) -> str:
@@ -242,14 +280,15 @@ def process_text(
     """Process a text for translation.
 
     Args:
-        text: Text to potentially translate
+        text: Text to potentially translate (may contain HTML)
         item_id: ID of the item (for logging)
         item_type: Type of item ("followup" or "ticket")
         config: Application configuration
         ollama: Ollama API client
 
     Returns:
-        Translated text if translation was needed, None otherwise
+        Translated text if translation was needed, None otherwise.
+        For HTML content, returns translated HTML with tags preserved.
     """
     # Strip HTML tags for language detection and length check
     plain_text = strip_html(text)
@@ -276,17 +315,20 @@ def process_text(
         )
         return None
 
-    # Translate using plain text
+    # Translate: pass original HTML (with tags) if present, so LLM preserves formatting
+    is_html = has_html_tags(text)
+    translation_input = text if is_html else plain_text
+
     logger.info(
         "Translating %s %d (%s -> %s): %s...",
         item_type,
         item_id,
         source_lang,
         target_lang,
-        plain_text[:80],
+        text[:80],
     )
 
-    translated = ollama.translate(plain_text, source_lang, target_lang)
+    translated = ollama.translate(translation_input, source_lang, target_lang, preserve_html=is_html)
     if not translated:
         logger.warning("Translation failed for %s %d", item_type, item_id)
         return None
