@@ -257,7 +257,6 @@ def build_translated_content(original: str, translated: str, prefix: str) -> str
             f"{original}"
             f"<br><br>"
             f"<{tag}><strong>{prefix}</strong></{tag}>"
-            f"<br>"
             f"{translated}"
         )
     else:
