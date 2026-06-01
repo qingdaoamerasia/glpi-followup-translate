@@ -219,7 +219,7 @@ def extract_original_text(content: str, prefix: str) -> str:
 
 def build_translated_content(original: str, translated: str, prefix: str) -> str:
     """Build content preserving original and adding translation (for description/followup)."""
-    return f"{original}\n\n{prefix}\n{translated}"
+    return f"{original}<br>\n{prefix}<br>\n{translated}"
 
 
 def build_translated_title(original: str, translated: str) -> str:

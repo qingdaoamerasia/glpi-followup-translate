@@ -40,8 +40,9 @@ translation:
   # Prefix added to translated followup text
   prefix: "[AUTO-TRANSLATED]"
 
-  # Minimum text length (characters) to trigger translation
-  min_text_length: 10
+  # Minimum text length (plain text, after stripping HTML) to trigger translation.
+  # Set to 0 to translate any text regardless of length.
+  min_text_length: 0
 
   # Supported language pairs
   # zh-cn -> en, en -> zh-cn
