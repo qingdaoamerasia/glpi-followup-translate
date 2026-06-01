@@ -11,6 +11,7 @@ class GlpiConfig:
     api_url: str
     client_id: str
     client_secret: str
+    auth_method: str = "auto"  # "oauth2", "app_token", or "auto" (try both)
 
 
 @dataclass
@@ -80,6 +81,7 @@ def load_config(config_path: str = None) -> AppConfig:
             api_url=raw["glpi"]["api_url"],
             client_id=raw["glpi"]["client_id"],
             client_secret=raw["glpi"]["client_secret"],
+            auth_method=raw["glpi"].get("auth_method", "auto"),
         ),
         ollama=OllamaConfig(
             api_url=raw.get("ollama", {}).get("api_url", "http://localhost:11434"),

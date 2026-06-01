@@ -141,6 +141,21 @@ glpi-followup-translate/
 └── README.md              # 本文件
 ```
 
+## 测试
+
+运行测试脚本创建示例工单并自动翻译：
+
+```bash
+python test_translate.py
+```
+
+这会：
+1. 检查 Ollama 连接
+2. 测试 GLPI 认证
+3. 创建 3 个测试工单（中英文混合）
+4. 运行一次翻译
+5. 显示翻译结果
+
 ## License
 
 MIT

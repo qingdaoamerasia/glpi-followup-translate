@@ -1,4 +1,9 @@
-"""GLPI API client for managing ticket followups via OAuth2."""
+"""GLPI API client for managing ticket followups.
+
+Supports two authentication methods:
+1. OAuth2 Client Credentials (when client_id/client_secret are OAuth2 credentials)
+2. GLPI App-Token + User-Token (standard GLPI API auth)
+"""
 
 import logging
 import time
@@ -17,17 +22,19 @@ class GlpiClient:
     def __init__(self, config: GlpiConfig):
         self.config = config
         self.api_url = config.api_url.rstrip("/")
+        self.session_token: Optional[str] = None
         self.access_token: Optional[str] = None
         self.token_expires_at: float = 0
         self.session = requests.Session()
         self.session.headers.update({"Content-Type": "application/json"})
 
-    def _ensure_token(self) -> None:
-        """Ensure we have a valid OAuth2 access token, refreshing if needed."""
-        if self.access_token and time.time() < self.token_expires_at - 30:
-            return
+    def _auth_oauth2(self) -> bool:
+        """Try OAuth2 Client Credentials authentication.
 
-        logger.info("Requesting new OAuth2 access token...")
+        Returns:
+            True if authentication succeeded
+        """
+        logger.info("Trying OAuth2 Client Credentials...")
         token_url = f"{self.api_url}/token"
 
         try:
@@ -52,10 +59,79 @@ class GlpiClient:
                 {"Authorization": f"Bearer {self.access_token}"}
             )
             logger.info("OAuth2 token obtained, expires in %ds", expires_in)
+            return True
 
         except requests.RequestException as e:
-            logger.error("Failed to obtain OAuth2 token: %s", e)
-            raise
+            logger.debug("OAuth2 auth failed: %s", e)
+            return False
+
+    def _auth_app_token(self) -> bool:
+        """Try GLPI App-Token + User-Token authentication via initSession.
+
+        Returns:
+            True if authentication succeeded
+        """
+        logger.info("Trying App-Token + User-Token auth via initSession...")
+
+        try:
+            resp = self.session.get(
+                f"{self.api_url}/initSession",
+                headers={
+                    "App-Token": self.config.client_id,
+                    "Authorization": f"user_token {self.config.client_secret}",
+                },
+                timeout=30,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            self.session_token = data.get("session_token")
+            if not self.session_token:
+                logger.error("initSession returned no session_token: %s", data)
+                return False
+
+            self.session.headers.update(
+                {
+                    "Session-Token": self.session_token,
+                    "App-Token": self.config.client_id,
+                }
+            )
+            # Remove any previous Authorization header
+            self.session.headers.pop("Authorization", None)
+            logger.info("Session token obtained successfully")
+            return True
+
+        except requests.RequestException as e:
+            logger.debug("App-Token auth failed: %s", e)
+            return False
+
+    def _ensure_token(self) -> None:
+        """Ensure we have a valid authentication, trying methods based on config."""
+        # If we have a valid OAuth2 token, use it
+        if self.access_token and time.time() < self.token_expires_at - 30:
+            return
+
+        # If we have a session token, we're good
+        if self.session_token:
+            return
+
+        auth_method = self.config.auth_method.lower()
+
+        if auth_method == "oauth2":
+            if not self._auth_oauth2():
+                raise RuntimeError("OAuth2 authentication failed. Check credentials.")
+        elif auth_method == "app_token":
+            if not self._auth_app_token():
+                raise RuntimeError("App-Token authentication failed. Check credentials.")
+        else:  # "auto" - try both
+            if self._auth_oauth2():
+                return
+            if self._auth_app_token():
+                return
+            raise RuntimeError(
+                "All authentication methods failed. "
+                "Check your GLPI credentials and OAuth2/App-Token configuration."
+            )
 
     def _request(
         self,
@@ -168,3 +244,41 @@ class GlpiClient:
                 "Search endpoint failed, falling back to per-ticket followup fetch"
             )
             return []
+
+    def create_ticket(self, name: str, content: str, **kwargs) -> Dict:
+        """Create a new ticket.
+
+        Args:
+            name: Ticket title/subject
+            content: Ticket description
+            **kwargs: Additional ticket fields (e.g., urgency, priority, etc.)
+
+        Returns:
+            Created ticket data
+        """
+        payload = {
+            "input": {
+                "name": name,
+                "content": content,
+                **kwargs,
+            }
+        }
+        return self._request("POST", "/Ticket", json_data=payload)
+
+    def create_followup(self, ticket_id: int, content: str) -> Dict:
+        """Create a new followup on a ticket.
+
+        Args:
+            ticket_id: The GLPI ticket ID
+            content: Followup content
+
+        Returns:
+            Created followup data
+        """
+        payload = {
+            "input": {
+                "tickets_id": ticket_id,
+                "content": content,
+            }
+        }
+        return self._request("POST", "/TicketFollowup", json_data=payload)

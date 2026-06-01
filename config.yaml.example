@@ -5,7 +5,13 @@ glpi:
   # GLPI API base URL
   api_url: "http://your-glpi-server/api.php/v2.3"
 
-  # OAuth2 credentials (Client Credentials flow)
+  # Authentication method: "oauth2", "app_token", or "auto" (try both)
+  # - oauth2: Use OAuth2 Client Credentials (client_id/client_secret are OAuth2 credentials)
+  # - app_token: Use GLPI App-Token + User-Token (client_id = App-Token, client_secret = User-Token)
+  # - auto: Try OAuth2 first, fall back to App-Token
+  auth_method: "auto"
+
+  # Credentials (OAuth2 Client ID + Client Secret, OR App-Token + User-Token)
   client_id: "your_client_id_here"
   client_secret: "your_client_secret_here"
 
