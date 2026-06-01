@@ -4,7 +4,7 @@ Auto-translate GLPI tickets using a local [Ollama](https://ollama.ai/) LLM.
 Detects Chinese or English content and translates bidirectionally (zh ↔ en).
 Works with ticket **names**, **descriptions**, and **followups**.
 
-> 📖 [中文文档](README.zh-CN.md)
+> 📖 English | [简体中文](README.zh-CN.md)
 
 ## Features
 
@@ -129,13 +129,20 @@ logging:
 |--------|-------------|---------|
 | `glpi.api_url` | GLPI API endpoint | — |
 | `glpi.auth_method` | `oauth2_password` or `app_token` | `oauth2_password` |
+| `glpi.client_id` | OAuth2 Client ID | — |
+| `glpi.client_secret` | OAuth2 Client Secret | — |
+| `glpi.username` | GLPI login username (oauth2_password) | — |
+| `glpi.password` | GLPI login password (oauth2_password) | — |
 | `ollama.api_url` | Ollama API URL | `http://localhost:11434` |
 | `ollama.model` | Translation model | `kaelri/hy-mt2:1.8b` |
 | `ollama.timeout` | Request timeout (seconds) | `60` |
 | `polling.interval` | Polling interval (seconds) | `60` |
 | `translation.prefix` | Translation separator marker | `[AUTO-TRANSLATED]` |
-| `translation.min_text_length` | Min plain-text length to translate | `0` |
-| `logging.level` | Log level | `INFO` |
+| `translation.min_text_length` | Min plain-text length to translate (0 = no limit) | `0` |
+| `translation.source_languages` | Language codes to detect | `["zh-cn", "zh", "en"]` |
+| `translation.target_language` | Source→target language mapping | `zh-cn→en, zh→en, en→zh-cn` |
+| `logging.level` | Log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) | `INFO` |
+| `logging.file` | Log file path | `glpi-translate.log` |
 
 ## Testing
 

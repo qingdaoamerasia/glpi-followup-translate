@@ -2,7 +2,7 @@
 
 使用本地 [Ollama](https://ollama.ai/) LLM 自动翻译 GLPI 工单。检测中文或英文内容并进行双向翻译（中文 ↔ 英文）。支持工单**标题**、**描述**和**跟进记录**。
 
-> 📖 [English Docs](README.md)
+> 📖 [English](README.md) | 简体中文
 
 ## 功能特性
 
@@ -127,13 +127,20 @@ logging:
 |--------|------|--------|
 | `glpi.api_url` | GLPI API 地址 | — |
 | `glpi.auth_method` | `oauth2_password` 或 `app_token` | `oauth2_password` |
+| `glpi.client_id` | OAuth2 Client ID | — |
+| `glpi.client_secret` | OAuth2 Client Secret | — |
+| `glpi.username` | GLPI 登录用户名（oauth2_password） | — |
+| `glpi.password` | GLPI 登录密码（oauth2_password） | — |
 | `ollama.api_url` | Ollama API 地址 | `http://localhost:11434` |
 | `ollama.model` | 翻译模型 | `kaelri/hy-mt2:1.8b` |
 | `ollama.timeout` | 请求超时（秒） | `60` |
 | `polling.interval` | 轮询间隔（秒） | `60` |
 | `translation.prefix` | 翻译分隔标记 | `[AUTO-TRANSLATED]` |
-| `translation.min_text_length` | 最小翻译文本长度 | `0` |
-| `logging.level` | 日志级别 | `INFO` |
+| `translation.min_text_length` | 最小翻译文本长度（0 = 不限） | `0` |
+| `translation.source_languages` | 检测的语言代码 | `["zh-cn", "zh", "en"]` |
+| `translation.target_language` | 源→目标语言映射 | `zh-cn→en, zh→en, en→zh-cn` |
+| `logging.level` | 日志级别（`DEBUG`、`INFO`、`WARNING`、`ERROR`） | `INFO` |
+| `logging.file` | 日志文件路径 | `glpi-translate.log` |
 
 ## 测试
 
