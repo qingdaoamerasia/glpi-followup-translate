@@ -9,8 +9,12 @@ import time
 from typing import Any, Dict, List, Optional
 
 import requests
+import urllib3
 
 from .config import GlpiConfig
+
+# Suppress warnings for self-signed certificates on internal servers
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +29,8 @@ class GlpiClient:
         self.refresh_token: Optional[str] = None
         self.token_expires_at: float = 0
         self.session = requests.Session()
+        # Accept self-signed certificates on internal GLPI servers
+        self.session.verify = False
         # Don't set Content-Type globally - let requests handle it
 
     def _auth_oauth2_password(self) -> bool:
