@@ -313,19 +313,26 @@ def detect_language(text: str) -> str:
 
 
 def detect_language_with_fallback(text: str, supported: set) -> str:
-    """Detect language with fallback for short ASCII texts.
+    """Detect language with fallback for short texts.
 
-    langdetect can misidentify short English texts (e.g. "Yes, sure" → fr).
-    If the primary detection returns an unsupported language, fall back to
-    'en' for short ASCII-only texts.
+    langdetect can misidentify short English texts (e.g. "Yes, sure" -> fr)
+    and short Chinese texts (e.g. "我还需要更多测试" -> ko).
+    Apply heuristics when the primary detection returns an unsupported language.
     """
     lang = detect_language(text)
     if lang in supported:
         return lang
 
+    # CJK character ranges: Chinese characters (U+4E00-U+9FFF),
+    # CJK Extension A (U+3400-U+4DBF), CJK Compatibility (U+F900-U+FAFF)
+    has_cjk = any('一' <= c <= '鿿' or '㐀' <= c <= '䶿' or '豈' <= c <= '﫿' for c in text)
+
+    if has_cjk and 'zh-cn' in supported:
+        return 'zh-cn'
+
     # If text is short and ASCII-only, it's likely English misidentified
-    if len(text) < 50 and all(ord(c) < 128 for c in text):
-        return "en"
+    if len(text) < 50 and all(ord(c) < 128 for c in text) and 'en' in supported:
+        return 'en'
 
     return lang
 
