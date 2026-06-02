@@ -63,18 +63,17 @@ Checked the firewall rules and found that port 3306 was accidentally closed.
 ### Option A: pip install (recommended)
 
 ```bash
-# 1. Install from GitHub
-pip install git+https://github.com/TonyBlur/glpi-followup-translate.git
+# Install from PyPI
+pip install glpi-followup-translate
 
-# 2. Pull the translation model
+# Pull the translation model
 ollama pull kaelri/hy-mt2:1.8b
 
-# 3. Create config in current directory
-curl -O https://raw.githubusercontent.com/TonyBlur/glpi-followup-translate/main/config.yaml.example
+# Create config in current directory
 cp config.yaml.example config.yaml
 # Edit config.yaml with your GLPI credentials
 
-# 4. Run
+# Run
 glpi-followup-translate              # daemon mode
 glpi-followup-translate --once      # single pass
 glpi-followup-translate -c /path/to/config.yaml  # custom config path
@@ -83,21 +82,24 @@ glpi-followup-translate -c /path/to/config.yaml  # custom config path
 ### Option B: Development / source install
 
 ```bash
-# 1. Clone
+# Clone
 git clone https://github.com/TonyBlur/glpi-followup-translate.git
 cd glpi-followup-translate
 
-# 2. Editable install
+# Editable install (recommended for development)
 pip install -e .
 
-# 3. Pull the translation model
+# Or install dependencies only
+pip install -r requirements.txt
+
+# Pull the translation model
 ollama pull kaelri/hy-mt2:1.8b
 
-# 4. Configure
+# Configure
 cp config.yaml.example config.yaml
 # Edit config.yaml with your GLPI credentials
 
-# 5. Run
+# Run
 glpi-followup-translate                 # CLI command
 python -m glpi_followup_translate       # or via python module
 glpi-followup-translate --once          # single pass
