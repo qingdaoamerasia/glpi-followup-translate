@@ -80,7 +80,7 @@ class OllamaClient:
                 "Translating %d chars: %s -> %s", len(text), source_lang, target_lang
             )
             # Dynamic timeout: at least config value, more for longer text
-            dynamic_timeout = max(self.timeout, len(text) / 20)
+            dynamic_timeout = max(self.timeout, len(text) / 10)
             resp = self.session.post(
                 f"{self.api_url}/api/generate",
                 json={

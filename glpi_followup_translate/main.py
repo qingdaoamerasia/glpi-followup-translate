@@ -413,6 +413,39 @@ def build_translated_title(original: str, translated: str) -> str:
     return f"{original} / {translated}"
 
 
+def _translate_chunked(
+    text: str, source_lang: str, target_lang: str, ollama: OllamaClient
+) -> Optional[str]:
+    """Translate long text by splitting into paragraphs to avoid timeout.
+
+    Splits on double-newline (paragraph) boundaries first, then sentence
+    boundaries if paragraphs are still too long.
+    """
+    # Split on paragraph boundaries
+    chunks = re.split(r'\n\n+', text)
+    # If any chunk is still > 500 chars, split further on sentence boundaries
+    final_chunks = []
+    for chunk in chunks:
+        if len(chunk) > 500:
+            sentences = re.split(r'(?<=[。！？.!?])\s*', chunk)
+            final_chunks.extend(s for s in sentences if s.strip())
+        else:
+            if chunk.strip():
+                final_chunks.append(chunk)
+
+    logger.debug("Chunked %d chars into %d parts", len(text), len(final_chunks))
+    translated_parts = []
+    for i, chunk in enumerate(final_chunks):
+        result = ollama.translate(chunk.strip(), source_lang, target_lang)
+        if result:
+            translated_parts.append(result)
+        else:
+            logger.warning("Chunk %d/%d translation failed", i+1, len(final_chunks))
+            translated_parts.append(chunk)  # keep original as fallback
+
+    return "\n\n".join(translated_parts)
+
+
 def process_text(
     text: str,
     item_id: int,
@@ -471,14 +504,20 @@ def process_text(
         return None
 
     logger.info(
-        "Translating %s %d (%s -> %s): %s...",
+        "Translating %s %d (%s -> %s, %d chars): %s...",
         item_type,
         item_id,
         source_lang,
         target_lang,
+        len(compact_text),
         plain_text[:80],
     )
-    translated = ollama.translate(compact_text, source_lang, target_lang)
+
+    # For long texts, split into paragraphs to avoid timeout
+    if len(compact_text) > 800:
+        translated = _translate_chunked(compact_text, source_lang, target_lang, ollama)
+    else:
+        translated = ollama.translate(compact_text, source_lang, target_lang)
     if not translated:
         logger.warning("Translation failed for %s %d", item_type, item_id)
         return None
