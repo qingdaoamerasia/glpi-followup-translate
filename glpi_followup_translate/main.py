@@ -438,10 +438,8 @@ def process_text(
         )
         return None
 
-    # Translate: pass original HTML (with tags) if present, so LLM preserves formatting
-    is_html = has_html_tags(text)
-    translation_input = text if is_html else plain_text
-
+    # Translate: pass original text with HTML — the model handles tags naturally
+    # without a special preserve_html prompt (which can cause copy-failures).
     logger.info(
         "Translating %s %d (%s -> %s): %s...",
         item_type,
@@ -450,8 +448,7 @@ def process_text(
         target_lang,
         text[:80],
     )
-
-    translated = ollama.translate(translation_input, source_lang, target_lang, preserve_html=is_html)
+    translated = ollama.translate(text, source_lang, target_lang)
     if not translated:
         logger.warning("Translation failed for %s %d", item_type, item_id)
         return None
