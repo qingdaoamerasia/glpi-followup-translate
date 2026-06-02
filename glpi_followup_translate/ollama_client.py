@@ -70,9 +70,9 @@ class OllamaClient:
         tgt_name = lang_names.get(target_lang, target_lang)
 
         prompt = (
-            f"Translate the following text from {src_name} to {tgt_name}. "
-            f"Return ONLY the translated text, no explanations or notes.\n\n"
-            f"Text to translate:\n{text}"
+            f"{src_name} to {tgt_name} translation:\n\n"
+            f"{text}\n\n"
+            f"{tgt_name}:"
         )
 
         try:
