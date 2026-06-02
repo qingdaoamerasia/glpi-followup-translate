@@ -2,20 +2,34 @@
 
 Auto-translate GLPI tickets using a local [Ollama](https://ollama.ai/) LLM.
 Detects Chinese or English content and translates bidirectionally (zh ↔ en).
-Works with ticket **names**, **descriptions**, and **followups**.
+Works with ticket **names**, **descriptions**, **followups**, **tasks**, **solutions**, and **validations**.
 
 > 📖 English | [简体中文](README.zh-CN.md)
 
 ## Features
 
 - 🔄 **Daemon or one-shot** — polling loop or single-pass mode
-- 🌐 **Language detection** — auto-detects Chinese and English
+- 🌐 **Language detection** — CJK-aware with mixed CN/EN fallback
 - 🔀 **Bidirectional** — zh-cn → en, en → zh-cn
 - 📝 **Preserves original** — translation appended, never overwritten
-- 🎨 **Rich-text aware** — HTML formatting (`<strong>`, `<em>`, `<span style="...">`, colors, font sizes) is preserved in translations
-- 🚫 **Dedup** — content-hash state tracking prevents duplicate translations
+- 🎨 **Rich-text aware** — HTML formatting preserved; verbose styles stripped for performance
+- 📦 **Full timeline** — followups, tasks, solutions, validations (approval request & answer)
+- 🚫 **Dedup** — content-hash state + in-content markers prevent duplicate translations
+- 🔄 **Auto-retry** — failed translations retried on next pass
+- ✂️ **Chunked translation** — long texts split into paragraphs to avoid timeout
 - ⚙️ **Configurable** — polling interval, model, language pairs, min text length
 - 💻 **Cross-platform** — Windows, Linux, macOS
+
+## Translation Targets
+
+| Type | Field(s) | Method |
+|------|----------|--------|
+| **Ticket** | `name`, `content` | PATCH ticket |
+| **Followup** | `content` | PATCH followup |
+| **Task** | `content` | PATCH task |
+| **Solution** | `content` | PATCH solution |
+| **Validation** | `submission_comment`, `approval_comment` | Create followup (read-only) |
+| **Document** | — | Skipped (no writable content) |
 
 ## Translation Format
 
