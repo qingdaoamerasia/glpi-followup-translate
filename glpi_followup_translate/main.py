@@ -685,6 +685,7 @@ def process_validation(
     glpi: GlpiClient,
     ollama: OllamaClient,
     state: ProcessedState,
+    existing_followups: list = None,
 ) -> bool:
     """Process a single validation for translation.
 
@@ -695,12 +696,24 @@ def process_validation(
     Translates both submission_comment (approval request) and approval_comment
     (approval answer) if present.
 
-    Returns:
-        True if any translation was performed
+    A hidden marker <!-- vt:ID --> in followup content prevents re-translation
+    even when the state file is lost.
     """
     validation_id = validation.get("id")
     if not validation_id:
         return False
+
+    # Check if already translated via marker in existing followups
+    marker = f"<!-- vt:{validation_id} -->"
+    if existing_followups:
+        for fu in existing_followups:
+            if marker in fu.get("content", ""):
+                if not state.is_submission_processed(validation_id,
+                    (validation.get("submission_comment") or "").strip()):
+                    state.mark_submission_processed(validation_id,
+                        (validation.get("submission_comment") or "").strip())
+                    state.save()
+                return False
 
     sub_comment = (validation.get("submission_comment") or "").strip()
     app_comment = (validation.get("approval_comment") or "").strip()
@@ -732,7 +745,7 @@ def process_validation(
     if translated_sub:
         sub_content = build_translated_content(
             sub_comment, translated_sub, config.translation.prefix
-        )
+        ) + f"\n{marker}"
         try:
             glpi.create_followup(ticket_id, sub_content)
             logger.info("Validation %d approval request translation posted", validation_id)
@@ -744,7 +757,7 @@ def process_validation(
     if translated_app:
         app_content = build_translated_content(
             app_comment, translated_app, config.translation.prefix
-        )
+        ) + f"\n{marker}"
         try:
             glpi.create_followup(ticket_id, app_content)
             logger.info("Validation %d approval answer translation posted", validation_id)
@@ -928,7 +941,7 @@ def run_once(
 
         for validation in validations:
             validation_id = validation.get("id", 0)
-            result = process_validation(validation, ticket_id, config, glpi, ollama, state)
+            result = process_validation(validation, ticket_id, config, glpi, ollama, state, followups)
             if result:
                 stats["validations_translated"] += 1
             elif validation_id:
