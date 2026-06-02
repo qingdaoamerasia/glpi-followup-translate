@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "glpi-followup-translate"
-version = "0.1.1"
+version = "0.1.0"
 description = "Auto-translate GLPI ticket followups using local Ollama LLM"
 readme = "README.md"
 license = { text = "MIT" }
