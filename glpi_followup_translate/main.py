@@ -497,9 +497,7 @@ def process_followup(
     # Process translation
     translated = process_text(content, followup_id, "followup", config, ollama)
     if not translated:
-        # Content unchanged, no translation needed. Mark to avoid re-checking.
-        state.mark_followup_processed(followup_id, content)
-        return False
+        return False  # Don't mark as processed — retry next pass
 
     # Build new content preserving original
     new_content = build_translated_content(content, translated, config.translation.prefix)
@@ -544,8 +542,7 @@ def process_task(
 
     translated = process_text(content, task_id, "task", config, ollama)
     if not translated:
-        state.mark_task_processed(task_id, content)
-        return False
+        return False  # Don't mark as processed — retry next pass
 
     new_content = build_translated_content(content, translated, config.translation.prefix)
 
@@ -588,8 +585,7 @@ def process_solution(
 
     translated = process_text(content, solution_id, "solution", config, ollama)
     if not translated:
-        state.mark_solution_processed(solution_id, content)
-        return False
+        return False  # Don't mark as processed — retry next pass
 
     new_content = build_translated_content(content, translated, config.translation.prefix)
 
