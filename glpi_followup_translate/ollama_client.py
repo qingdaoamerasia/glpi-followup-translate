@@ -73,18 +73,21 @@ class OllamaClient:
 
         if preserve_html:
             prompt = (
-                f"Translate the following HTML content from {src_name} to {tgt_name}. "
-                f"IMPORTANT: Preserve ALL HTML tags, attributes, and structure "
-                f"exactly as they are - keep every <tag> unchanged. "
-                f"Only translate the visible text content between tags. "
-                f"Do NOT add new tags, remove tags, or change tag attributes. "
-                f"Return ONLY the translated HTML, no explanations or notes.\n\n"
+                f"You are a professional translator. "
+                f"Translate ALL of the following HTML content from {src_name} to {tgt_name}. "
+                f"It is CRITICAL that you translate EVERY word — do NOT copy the original text. "
+                f"Preserve ALL HTML tags, attributes, and structure exactly as they are. "
+                f"Only translate the visible text between tags. "
+                f"Do NOT add, remove, or modify any HTML tags. "
+                f"Return ONLY the translated HTML, no explanations.\n\n"
                 f"HTML to translate:\n{text}"
             )
         else:
             prompt = (
+                f"You are a professional translator. "
                 f"Translate the following text from {src_name} to {tgt_name}. "
-                f"Return ONLY the translated text, no explanations or notes.\n\n"
+                f"It is CRITICAL that you translate EVERY word — do NOT copy the original text. "
+                f"Return ONLY the translated text, no explanations.\n\n"
                 f"Text to translate:\n{text}"
             )
 
@@ -99,7 +102,8 @@ class OllamaClient:
                     "prompt": prompt,
                     "stream": False,
                     "options": {
-                        "temperature": 0.1,  # Low temp for consistent translation
+                        "temperature": 0.3,
+                        "repeat_penalty": 1.2,
                     },
                 },
                 timeout=self.timeout,

@@ -456,6 +456,24 @@ def process_text(
         logger.warning("Translation failed for %s %d", item_type, item_id)
         return None
 
+    # Validate: if the model returned identical text, translation didn't happen.
+    # This can occur with small models on short or HTML-preserved input.
+    translated_plain = strip_html(translated)
+    if translated_plain == plain_text:
+        if is_html:
+            # Retry without HTML preservation — sometimes the model struggles with HTML
+            logger.debug(
+                "%s %d: HTML translation produced identical text, retrying as plain text",
+                item_type, item_id,
+            )
+            translated = ollama.translate(plain_text, source_lang, target_lang, preserve_html=False)
+            if not translated or strip_html(translated) == plain_text:
+                logger.warning("Translation for %s %d produced identical text, model may have failed", item_type, item_id)
+                return None
+        else:
+            logger.warning("Translation for %s %d produced identical text, model may have failed", item_type, item_id)
+            return None
+
     return translated
 
 
