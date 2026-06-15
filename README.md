@@ -97,7 +97,7 @@ glpi-followup-translate -c /path/to/config.yaml  # custom config path
 
 ```bash
 # Clone
-git clone https://github.com/TonyBlur/glpi-followup-translate.git
+git clone https://github.com/qingdaoamerasia/glpi-followup-translate.git
 cd glpi-followup-translate
 
 # Editable install (recommended for development)

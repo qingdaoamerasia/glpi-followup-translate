@@ -95,7 +95,7 @@ glpi-followup-translate -c /path/to/config.yaml  # 指定配置文件
 
 ```bash
 # 克隆仓库
-git clone https://github.com/TonyBlur/glpi-followup-translate.git
+git clone https://github.com/qingdaoamerasia/glpi-followup-translate.git
 cd glpi-followup-translate
 
 # 可编辑安装（推荐开发使用）
