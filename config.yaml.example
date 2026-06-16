@@ -55,6 +55,35 @@ translation:
     zh: "en"
     en: "zh-cn"
 
+  # Glossary: domain-specific terminology for consistent translations.
+  # Organized by source language — each entry maps a term in the source language
+  # to its prescribed translation in the target language.
+  # This ensures technical terms, product names, and jargon are always
+  # translated the same way, regardless of what the LLM chooses.
+  #
+  # Format:
+  #   glossary:
+  #     <source_lang>:
+  #       <source_term>: "<target_translation>"
+  #
+  # Glossary terms are included in the LLM prompt AND enforced via
+  # post-processing (find-and-replace) for maximum reliability.
+  #
+  # Example:
+  glossary:
+    zh-cn:
+      工单: "ticket"
+      跟进: "followup"
+      数据库: "database"
+      防火墙: "firewall"
+      服务器: "server"
+    en:
+      ticket: "工单"
+      followup: "跟进记录"
+      database: "数据库"
+      firewall: "防火墙"
+      server: "服务器"
+
 # Logging
 logging:
   level: "INFO"  # DEBUG, INFO, WARNING, ERROR

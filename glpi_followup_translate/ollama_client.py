@@ -1,6 +1,7 @@
 """Ollama API client for text translation using local LLM."""
 
 import logging
+import re
 from typing import Optional
 
 import requests
@@ -50,6 +51,7 @@ class OllamaClient:
 
     def translate(
         self, text: str, source_lang: str, target_lang: str,
+        glossary: dict = None,
     ) -> Optional[str]:
         """Translate text using Ollama LLM.
 
@@ -57,6 +59,9 @@ class OllamaClient:
             text: Text to translate (may contain HTML)
             source_lang: Source language code (e.g., 'zh-cn', 'en')
             target_lang: Target language code (e.g., 'en', 'zh-cn')
+            glossary: Accepted but not used in prompt — glossary enforcement is
+                      handled by post-processing in main.py for reliability
+                      with small translation models.
 
         Returns:
             Translated text, or None if translation failed
@@ -102,6 +107,12 @@ class OllamaClient:
                 logger.warning("Ollama returned empty translation")
                 return None
 
+            # Clean up model artifacts
+            translated = self._clean_output(translated)
+            if not translated:
+                logger.warning("Ollama translation was empty after cleanup")
+                return None
+
             logger.debug("Translation result: %s", translated[:100])
             return translated
 
@@ -114,3 +125,31 @@ class OllamaClient:
         except requests.RequestException as e:
             logger.error("Ollama translation failed: %s", e)
             return None
+
+    @staticmethod
+    def _clean_output(text: str) -> str:
+        """Strip common artifacts from small translation model output.
+
+        Small models sometimes append instruction echoes, language labels,
+        or glossary-like lists after the actual translation.
+        """
+        if not text:
+            return text
+
+        # Remove trailing instruction-like blocks (e.g. "Use these term translations...")
+        # These patterns indicate the model echoed back prompt instructions
+        noise_patterns = [
+            r'\n+Use these term translations.*$',
+            r'\n+请始终使用以下术语翻译.*$',
+            r'\n+请使用以下术语.*$',
+            r'\n+以下是术语.*$',
+            r'\n+Term translations:.*$',
+            r'\n+Glossary:.*$',
+        ]
+        for pattern in noise_patterns:
+            text = re.sub(pattern, '', text, flags=re.IGNORECASE | re.DOTALL)
+
+        # Remove trailing language labels like "Chinese (Simplified):" or "English:"
+        text = re.sub(r'\n+(?:Chinese(?:\s*\([^)]*\))?|English)\s*:\s*$', '', text, flags=re.IGNORECASE)
+
+        return text.strip()

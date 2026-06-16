@@ -36,6 +36,7 @@ class TranslationConfig:
     target_language: Dict[str, str] = field(
         default_factory=lambda: {"zh-cn": "en", "zh": "en", "en": "zh-cn"}
     )
+    glossary: Dict[str, Dict[str, str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -109,6 +110,11 @@ def load_config(config_path: str = None) -> AppConfig:
             target_language=raw.get("translation", {}).get(
                 "target_language", {"zh-cn": "en", "zh": "en", "en": "zh-cn"}
             ),
+            glossary={
+                lang: {str(k): str(v) for k, v in terms.items()}
+                for lang, terms in raw.get("translation", {}).get("glossary", {}).items()
+                if isinstance(terms, dict)
+            },
         ),
         logging=LoggingConfig(
             level=raw.get("logging", {}).get("level", "INFO"),

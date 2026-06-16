@@ -255,7 +255,7 @@ class ProcessedState:
         if validation_id not in self.processed_validations:
             return False
         old_hash = self.processed_validations[validation_id][1]
-        return old_hash == self._content_hash(app_comment) if app_comment else bool(old_hash)
+        return old_hash == self._content_hash(app_comment)
 
     def mark_submission_processed(self, validation_id: int, sub_comment: str) -> None:
         """Mark a validation's submission_comment as processed."""
@@ -334,25 +334,52 @@ def detect_language(text: str) -> str:
         return "unknown"
 
 
+def _count_cjk(text: str) -> int:
+    """Count CJK (Chinese) characters in text."""
+    return sum(1 for c in text if '\u4e00' <= c <= '\u9fff' or '\u3400' <= c <= '\u4dbf')
+
+
+def _cjk_ratio(text: str) -> float:
+    """Calculate the ratio of CJK characters to total alphabetic characters."""
+    alpha_chars = sum(1 for c in text if c.isalpha())
+    if alpha_chars == 0:
+        return 0.0
+    cjk_count = _count_cjk(text)
+    return cjk_count / alpha_chars
+
+
 def detect_language_with_fallback(text: str, supported: set) -> str:
     """Detect language with fallback for short and mixed-language texts.
 
     langdetect can misidentify short English texts (e.g. "Yes, sure" -> fr),
-    short Chinese texts (e.g. "测试" -> ko), and mixed Chinese-English texts
-    (e.g. "Please check 数据库" -> en).
+    short Chinese texts (e.g. "测试" -> ko), and mixed Chinese-English texts.
 
-    Heuristic: if CJK characters are present, treat as zh-cn.
-    If only ASCII and short, fall back to en.
+    Heuristic using CJK character ratio:
+    - If CJK ratio >= 10%: treat as zh-cn (clearly Chinese text, possibly with English terms)
+    - If CJK ratio < 10% but CJK chars present: override langdetect 'en' to zh-cn
+      (Chinese-speaking user writing mostly English — any CJK is a strong signal)
+    - If no CJK and short ASCII: fall back to en
     """
-    # CJK characters take priority — mixed CN/EN text should be zh-cn -> en
-    has_cjk = any('一' <= c <= '鿿' or '㐀' <= c <= '䶿' for c in text)
+    cjk_count = _count_cjk(text)
+    ratio = _cjk_ratio(text)
 
-    if has_cjk and 'zh-cn' in supported:
+    # High CJK ratio (>=10%): clearly Chinese text
+    if ratio >= 0.1 and 'zh-cn' in supported:
         return 'zh-cn'
 
+    # Standard langdetect
     lang = detect_language(text)
     if lang in supported:
+        # Override: if CJK chars present but langdetect says 'en',
+        # treat as zh-cn. CJK presence indicates a Chinese-speaking user
+        # even when English words dominate the text.
+        if cjk_count > 0 and lang == 'en' and 'zh-cn' in supported:
+            return 'zh-cn'
         return lang
+
+    # Low CJK ratio with langdetect returning unsupported language
+    if cjk_count > 0 and 'zh-cn' in supported:
+        return 'zh-cn'
 
     # If text is short and ASCII-only, it's likely English misidentified
     if len(text) < 50 and all(ord(c) < 128 for c in text) and 'en' in supported:
@@ -414,8 +441,115 @@ def build_translated_title(original: str, translated: str) -> str:
     return f"{original} / {translated}"
 
 
+def _get_glossary(config: AppConfig, source_lang: str, target_lang: str) -> dict:
+    """Get the glossary terms for a specific translation direction.
+
+    Looks up glossary entries for source_lang first, then falls back to
+    any matching base language (e.g., 'zh-cn' -> 'zh').
+    """
+    glossary = config.translation.glossary
+    if not glossary:
+        return {}
+
+    # Direct match
+    terms = dict(glossary.get(source_lang, {}))
+
+    # Fallback: try base language (e.g., 'zh-cn' -> 'zh')
+    if not terms and '-' in source_lang:
+        base = source_lang.split('-')[0]
+        terms = dict(glossary.get(base, {}))
+
+    return terms
+
+
+def _apply_glossary(text: str, glossary: dict) -> str:
+    """Post-process translated text to enforce glossary terms.
+
+    Replaces source terms found in the translation with their prescribed glossary
+    translations. Uses word-boundary matching for English terms to avoid partial
+    replacements. This handles the case where the model preserves the source term
+    unchanged in the output.
+    """
+    if not glossary or not text:
+        return text
+
+    for src_term, tgt_term in glossary.items():
+        if not src_term or not tgt_term:
+            continue
+        if src_term == tgt_term:
+            continue
+        if src_term in text:
+            has_cjk_src = any('\u4e00' <= c <= '\u9fff' for c in src_term)
+            if has_cjk_src:
+                text = text.replace(src_term, tgt_term)
+            else:
+                text = re.sub(
+                    r'\b' + re.escape(src_term) + r'\b',
+                    tgt_term,
+                    text,
+                )
+
+    return text
+
+
+_GLS_PLACEHOLDER_RE = re.compile(r'GLS(\d+)GLS')
+
+
+def _replace_with_placeholders(text: str, glossary: dict) -> tuple:
+    """Replace glossary source terms with placeholders before translation.
+
+    Returns:
+        (modified_text, mapping) where mapping is {placeholder_id: target_term}
+    """
+    if not glossary or not text:
+        return text, {}
+
+    mapping = {}
+    idx = 0
+    # Sort by length descending so longer terms are replaced first
+    # (prevents partial replacement of overlapping terms)
+    for src_term, tgt_term in sorted(glossary.items(), key=lambda x: len(x[0]), reverse=True):
+        if not src_term or not tgt_term or src_term == tgt_term:
+            continue
+        if src_term not in text:
+            continue
+
+        placeholder = f"GLS{idx}GLS"
+        has_cjk = any('\u4e00' <= c <= '\u9fff' for c in src_term)
+        if has_cjk:
+            text = text.replace(src_term, placeholder)
+        else:
+            text = re.sub(r'\b' + re.escape(src_term) + r'\b', placeholder, text)
+        mapping[idx] = tgt_term
+        idx += 1
+
+    return text, mapping
+
+
+def _restore_placeholders(text: str, mapping: dict) -> str:
+    """Replace placeholders with glossary target terms after translation.
+
+    Small models may add spaces (e.g. 'GLS 0 GLS') or change case,
+    so we also try flexible regex patterns as fallback.
+    """
+    if not mapping or not text:
+        return text
+
+    for idx, tgt_term in mapping.items():
+        placeholder = f"GLS{idx}GLS"
+        # Try exact match first
+        if placeholder in text:
+            text = text.replace(placeholder, tgt_term)
+        else:
+            # Fallback: flexible regex for model artifacts (spaces, case)
+            pattern = rf'GLS\s*{idx}\s*GLS'
+            text = re.sub(pattern, tgt_term, text, flags=re.IGNORECASE)
+
+    return text
+
+
 def _translate_chunked(
-    text: str, source_lang: str, target_lang: str, ollama: OllamaClient
+    text: str, source_lang: str, target_lang: str, ollama: OllamaClient,
 ) -> Optional[str]:
     """Translate long text by splitting into paragraphs to avoid timeout.
 
@@ -481,7 +615,8 @@ def process_text(
     source_lang = detect_language_with_fallback(
         plain_text, set(config.translation.source_languages)
     )
-    logger.debug("%s %d detected language: %s", item_type, item_id, source_lang)
+    cjk_r = _cjk_ratio(plain_text)
+    logger.debug("%s %d detected language: %s (CJK ratio: %.1f%%)", item_type, item_id, source_lang, cjk_r * 100)
 
     # Check if it's a language we should translate
     target_lang = config.translation.target_language.get(source_lang)
@@ -514,6 +649,16 @@ def process_text(
         plain_text[:80],
     )
 
+    # Get glossary for this translation direction
+    glossary = _get_glossary(config, source_lang, target_lang)
+    placeholder_mapping = {}
+    if glossary:
+        logger.debug("Using glossary with %d terms for %s -> %s", len(glossary), source_lang, target_lang)
+        # Replace glossary source terms with placeholders BEFORE translation
+        compact_text, placeholder_mapping = _replace_with_placeholders(compact_text, glossary)
+        if placeholder_mapping:
+            logger.debug("Replaced %d glossary term(s) with placeholders", len(placeholder_mapping))
+
     # For long texts, split into paragraphs to avoid timeout
     if len(compact_text) > 800:
         translated = _translate_chunked(compact_text, source_lang, target_lang, ollama)
@@ -522,6 +667,14 @@ def process_text(
     if not translated:
         logger.warning("Translation failed for %s %d", item_type, item_id)
         return None
+
+    # Post-process: restore placeholder terms with correct glossary targets
+    if placeholder_mapping:
+        translated = _restore_placeholders(translated, placeholder_mapping)
+
+    # Post-process: also apply glossary as fallback for any surviving source terms
+    if glossary:
+        translated = _apply_glossary(translated, glossary)
 
     # Validate: if the model returned identical text, translation didn't happen.
     # This can occur with small models on short or HTML-preserved input.
@@ -532,10 +685,30 @@ def process_text(
 
     # Validate: ensure the translated text is actually in the target language,
     # not just a rephrasing in the source language (model failure mode).
+    # Use CJK ratio comparison for zh<->en translations to handle mixed-language texts
+    # where a few CJK chars may survive in the translation (e.g. proper nouns).
+    translation_valid = False
     detected_lang = detect_language_with_fallback(
         translated_plain, set(config.translation.source_languages)
     )
-    if detected_lang == source_lang:
+    if detected_lang != source_lang:
+        translation_valid = True
+    else:
+        # Language detection says same language, but check CJK ratio shift
+        # for zh-cn <-> en translations: a significant ratio drop/gain indicates
+        # the translation actually happened despite detection ambiguity.
+        src_cjk = _cjk_ratio(plain_text)
+        tgt_cjk = _cjk_ratio(translated_plain)
+        if source_lang in ('zh-cn', 'zh') and target_lang == 'en':
+            # Chinese -> English: CJK ratio should drop significantly
+            if tgt_cjk < src_cjk * 0.5:
+                translation_valid = True
+        elif source_lang == 'en' and target_lang in ('zh-cn', 'zh'):
+            # English -> Chinese: CJK ratio should increase significantly
+            if tgt_cjk > src_cjk + 0.1:
+                translation_valid = True
+
+    if not translation_valid:
         logger.warning(
             "Translation for %s %d stayed in source language %s, model may have failed",
             item_type, item_id, source_lang,
@@ -590,7 +763,7 @@ def process_followup(
         return True
     except Exception as e:
         logger.error("Failed to update followup %d: %s", followup_id, e)
-        return False
+        return None  # Translation succeeded but API update failed
 
 
 def process_task(
@@ -633,7 +806,7 @@ def process_task(
         return True
     except Exception as e:
         logger.error("Failed to update task %d: %s", task_id, e)
-        return False
+        return None  # Translation succeeded but API update failed
 
 
 def process_solution(
@@ -676,7 +849,7 @@ def process_solution(
         return True
     except Exception as e:
         logger.error("Failed to update solution %d: %s", solution_id, e)
-        return False
+        return None  # Translation succeeded but API update failed
 
 
 def process_validation(
@@ -771,6 +944,10 @@ def process_validation(
         state.save()
         return True
 
+    # Translation was attempted but all followup posts failed
+    if translated_sub or translated_app:
+        return None
+
     return False
 
 
@@ -801,7 +978,20 @@ def process_ticket(
     translated_content = None
 
     # Translate name if needed (skip if already translated with old or new format)
-    name_already_translated = is_already_translated(name, config.translation.prefix) or " / " in name
+    name_already_translated = is_already_translated(name, config.translation.prefix)
+    if not name_already_translated and " / " in name:
+        # Check if " / " is a translation separator (old format: "original / translated")
+        # vs. a legitimate part of the title (e.g., "Server A / Rack B")
+        orig_part, trans_part = name.split(" / ", 1)
+        orig_lang = detect_language_with_fallback(
+            orig_part.strip(), set(config.translation.source_languages)
+        )
+        trans_lang = detect_language_with_fallback(
+            trans_part.strip(), set(config.translation.source_languages)
+        )
+        # If the two parts are in different languages, it's likely already translated
+        if orig_lang != trans_lang:
+            name_already_translated = True
     if name and not name_already_translated:
         translated_name = process_text(name, ticket_id, "ticket_name", config, ollama)
 
@@ -837,7 +1027,7 @@ def process_ticket(
         return True
     except Exception as e:
         logger.error("Failed to update ticket %d: %s", ticket_id, e)
-        return False
+        return None  # Translation succeeded but API update failed
 
 
 def run_once(
@@ -872,15 +1062,26 @@ def run_once(
     stats["tickets_checked"] = len(tickets)
     logger.info("Checking %d tickets...", len(tickets))
 
+    # Collect IDs during main loop for cleanup (avoid redundant API calls)
+    all_followup_ids: Set[int] = set()
+    all_ticket_ids: Set[int] = set()
+    all_task_ids: Set[int] = set()
+    all_solution_ids: Set[int] = set()
+    all_validation_ids: Set[int] = set()
+
     for ticket in tickets:
         ticket_id = ticket.get("id")
         if not ticket_id:
             continue
 
+        all_ticket_ids.add(ticket_id)
+
         # Process ticket name and content
         ticket_result = process_ticket(ticket, config, glpi, ollama, state)
-        if ticket_result:
+        if ticket_result is True:
             stats["tickets_translated"] += 1
+        elif ticket_result is None:
+            stats["failed"] += 1
         elif state.is_ticket_processed(
             ticket_id,
             ticket.get("name", "").strip(),
@@ -897,9 +1098,13 @@ def run_once(
 
         for followup in followups:
             followup_id = followup.get("id", 0)
+            if followup_id:
+                all_followup_ids.add(followup_id)
             result = process_followup(followup, ticket_id, config, glpi, ollama, state)
-            if result:
+            if result is True:
                 stats["followups_translated"] += 1
+            elif result is None:
+                stats["failed"] += 1
             elif followup_id and state.is_followup_processed(followup_id, followup.get("content", "")):
                 stats["followups_skipped"] += 1
 
@@ -912,9 +1117,13 @@ def run_once(
 
         for task in tasks:
             task_id = task.get("id", 0)
+            if task_id:
+                all_task_ids.add(task_id)
             result = process_task(task, ticket_id, config, glpi, ollama, state)
-            if result:
+            if result is True:
                 stats["tasks_translated"] += 1
+            elif result is None:
+                stats["failed"] += 1
             elif task_id and state.is_task_processed(task_id, task.get("content", "")):
                 stats["tasks_skipped"] += 1
 
@@ -927,9 +1136,13 @@ def run_once(
 
         for solution in solutions:
             solution_id = solution.get("id", 0)
+            if solution_id:
+                all_solution_ids.add(solution_id)
             result = process_solution(solution, ticket_id, config, glpi, ollama, state)
-            if result:
+            if result is True:
                 stats["solutions_translated"] += 1
+            elif result is None:
+                stats["failed"] += 1
             elif solution_id and state.is_solution_processed(solution_id, solution.get("content", "")):
                 stats["solutions_skipped"] += 1
 
@@ -942,9 +1155,13 @@ def run_once(
 
         for validation in validations:
             validation_id = validation.get("id", 0)
+            if validation_id:
+                all_validation_ids.add(validation_id)
             result = process_validation(validation, ticket_id, config, glpi, ollama, state, followups)
-            if result:
+            if result is True:
                 stats["validations_translated"] += 1
+            elif result is None:
+                stats["failed"] += 1
             elif validation_id:
                 sub = (validation.get("submission_comment") or "").strip()
                 app = (validation.get("approval_comment") or "").strip()
@@ -953,40 +1170,7 @@ def run_once(
                 if sub_done and app_done:
                     stats["validations_skipped"] += 1
 
-    # Periodic cleanup
-    all_followup_ids: Set[int] = set()
-    all_ticket_ids: Set[int] = set()
-    all_task_ids: Set[int] = set()
-    all_solution_ids: Set[int] = set()
-    all_validation_ids: Set[int] = set()
-    for ticket in tickets:
-        ticket_id = ticket.get("id")
-        if ticket_id:
-            all_ticket_ids.add(ticket_id)
-            try:
-                for fu in glpi.get_ticket_followups(ticket_id):
-                    if fu.get("id"):
-                        all_followup_ids.add(fu["id"])
-            except Exception:
-                pass
-            try:
-                for t in glpi.get_ticket_tasks(ticket_id):
-                    if t.get("id"):
-                        all_task_ids.add(t["id"])
-            except Exception:
-                pass
-            try:
-                for s in glpi.get_ticket_solutions(ticket_id):
-                    if s.get("id"):
-                        all_solution_ids.add(s["id"])
-            except Exception:
-                pass
-            try:
-                for v in glpi.get_ticket_validations(ticket_id):
-                    if v.get("id"):
-                        all_validation_ids.add(v["id"])
-            except Exception:
-                pass
+    # Cleanup stale entries using IDs collected during the main loop
     state.cleanup_followups(all_followup_ids)
     state.cleanup_tickets(all_ticket_ids)
     state.cleanup_tasks(all_task_ids)
@@ -1052,6 +1236,72 @@ def daemon_loop(config: AppConfig) -> None:
             time.sleep(1)
 
     logger.info("=== GLPI Followup Translate stopped ===")
+
+
+def _view_logs(config_path: str = None, lines: int = 50, follow: bool = False) -> None:
+    """View recent log entries from the log file.
+
+    Args:
+        config_path: Path to config.yaml (to resolve log file path)
+        lines: Number of recent lines to display
+        follow: If True, continuously tail the log file
+    """
+    # Fix Windows console encoding for non-ASCII characters
+    if sys.platform == "win32":
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+
+    # Resolve log file path from config
+    try:
+        config = load_config(config_path)
+        log_file = config.logging.file
+    except FileNotFoundError:
+        # Fallback: try common log file locations
+        for candidate in ["glpi-translate.log", os.path.join(os.getcwd(), "glpi-translate.log")]:
+            if os.path.exists(candidate):
+                log_file = candidate
+                break
+        else:
+            print("Error: Could not find config or log file. Run the tool first to generate logs.")
+            sys.exit(1)
+
+    if not os.path.exists(log_file):
+        print(f"Log file not found: {log_file}")
+        print("Run the tool first to generate a log file.")
+        sys.exit(1)
+
+    if follow:
+        # Tail mode: print last lines then follow
+        print(f"=== Tailing {log_file} (Ctrl+C to stop) ===\n")
+        try:
+            with open(log_file, "r", encoding="utf-8") as f:
+                # Seek to end and read last N lines
+                content = f.readlines()
+                for line in content[-lines:]:
+                    print(line, end="")
+                # Follow new entries
+                import time as _time
+                while True:
+                    line = f.readline()
+                    if line:
+                        print(line, end="")
+                    else:
+                        _time.sleep(0.5)
+        except KeyboardInterrupt:
+            print("\n=== Stopped tailing ===")
+    else:
+        # Show last N lines
+        with open(log_file, "r", encoding="utf-8") as f:
+            all_lines = f.readlines()
+
+        display_lines = all_lines[-lines:]
+        total = len(all_lines)
+        showing = len(display_lines)
+
+        print(f"=== {log_file} (showing last {showing} of {total} lines) ===\n")
+        for line in display_lines:
+            print(line, end="")
+        print()
 
 
 def _install_service(remove: bool = False) -> None:
@@ -1197,6 +1447,22 @@ def main():
         action="store_true",
         help="Remove background service",
     )
+    parser.add_argument(
+        "--logs",
+        action="store_true",
+        help="View recent log entries and exit",
+    )
+    parser.add_argument(
+        "--log-lines",
+        type=int,
+        default=50,
+        help="Number of log lines to display (default: 50)",
+    )
+    parser.add_argument(
+        "--follow",
+        action="store_true",
+        help="Continuously tail the log file (use with --logs)",
+    )
     args = parser.parse_args()
 
     if args.install_service:
@@ -1204,6 +1470,9 @@ def main():
         return
     if args.remove_service:
         _install_service(remove=True)
+        return
+    if args.logs:
+        _view_logs(config_path=args.config, lines=args.log_lines, follow=args.follow)
         return
 
     # Load config

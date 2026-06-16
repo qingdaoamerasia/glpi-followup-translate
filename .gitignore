@@ -36,3 +36,4 @@ cache/
 # State file
 processed_state.json
 processed_followups.json
+.test_ticket_ids.json

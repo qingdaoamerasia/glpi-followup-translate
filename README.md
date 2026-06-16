@@ -4,20 +4,22 @@ Auto-translate GLPI tickets using a local [Ollama](https://ollama.ai/) LLM.
 Detects Chinese or English content and translates bidirectionally (zh ↔ en).
 Works with ticket **names**, **descriptions**, **followups**, **tasks**, **solutions**, and **validations**.
 
-> 📖 English | [简体中文](README.zh-CN.md)
+📖 English | [简体中文](README.zh-CN.md)
 
 ## Features
 
 - 🔄 **Daemon or one-shot** — polling loop or single-pass mode
-- 🌐 **Language detection** — CJK-aware with mixed CN/EN fallback
+- 🌐 **Language detection** — CJK ratio-aware with mixed CN/EN fallback
 - 🔀 **Bidirectional** — zh-cn → en, en → zh-cn
+- 📖 **Glossary** — domain-specific terminology for consistent translations
 - 📝 **Preserves original** — translation appended, never overwritten
 - 🎨 **Rich-text aware** — HTML formatting preserved; verbose styles stripped for performance
 - 📦 **Full timeline** — followups, tasks, solutions, validations (approval request & answer)
 - 🚫 **Dedup** — content-hash state + in-content markers prevent duplicate translations
 - 🔄 **Auto-retry** — failed translations retried on next pass
 - ✂️ **Chunked translation** — long texts split into paragraphs to avoid timeout
-- ⚙️ **Configurable** — polling interval, model, language pairs, min text length
+- 📋 **Log viewer** — view recent logs via `--logs` command
+- ⚙️ **Configurable** — polling interval, model, language pairs, glossary, min text length
 - 💻 **Cross-platform** — Windows, Linux, macOS
 
 ## Translation Targets
@@ -90,6 +92,8 @@ cp config.yaml.example config.yaml
 # Run
 glpi-followup-translate              # daemon mode
 glpi-followup-translate --once      # single pass
+glpi-followup-translate --logs      # view recent logs
+glpi-followup-translate --logs --follow  # tail logs in real-time
 glpi-followup-translate -c /path/to/config.yaml  # custom config path
 ```
 
@@ -117,6 +121,7 @@ cp config.yaml.example config.yaml
 glpi-followup-translate                 # CLI command
 python -m glpi_followup_translate       # or via python module
 glpi-followup-translate --once          # single pass
+glpi-followup-translate --logs          # view recent logs
 ```
 
 ## Configuration
@@ -151,6 +156,15 @@ translation:
     zh-cn: "en"
     zh: "en"
     en: "zh-cn"
+  glossary:             # domain-specific terms (source_lang: {term: translation})
+    zh-cn:
+      工单: "ticket"
+      数据库: "database"
+      服务器: "server"
+    en:
+      ticket: "工单"
+      database: "数据库"
+      server: "服务器"
 
 logging:
   level: "INFO"
@@ -173,44 +187,55 @@ logging:
 | `translation.min_text_length` | Min plain-text length to translate (0 = no limit) | `0` |
 | `translation.source_languages` | Language codes to detect | `["zh-cn", "zh", "en"]` |
 | `translation.target_language` | Source→target language mapping | `zh-cn→en, zh→en, en→zh-cn` |
+| `translation.glossary` | Per-direction term mappings for consistent translation | `{}` (empty) |
 | `logging.level` | Log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) | `INFO` |
 | `logging.file` | Log file path | `glpi-translate.log` |
 
 ## Testing
 
-### Single ticket test
-
 ```bash
-python test_single_ticket.py
+# Unit tests only (no GLPI/Ollama required)
+python test_integration.py --unit
+
+# Single-ticket quick test (Round 1 only)
+python test_integration.py --single
+
+# Run first N rounds
+python test_integration.py --rounds 3
+
+# Run ALL rounds (full test suite)
+python test_integration.py --rounds 0
+
+# List available test rounds
+python test_integration.py --list-rounds
+
+# Clean up test tickets created by this script
+python test_integration.py --cleanup
 ```
 
-Creates one test ticket with rich-text (HTML) content and mixed Chinese/English
-followups, then runs one translation pass and verifies the format.
+### Unit Tests (`--unit`)
 
-The script will:
-1. Check Ollama connectivity
-2. Test GLPI authentication
-3. Create a test ticket with HTML-formatted description
-4. Add 3 followups (plain text and HTML)
-5. Run one translation pass
-6. Display translated results
-7. Verify format correctness (title: `/` separator, HTML: `<br>` separators, plain: `\n\n` separators)
+Tests language detection, CJK ratio calculation, glossary post-processing,
+output cleanup, and placeholder round-trip — all without external services.
 
-### Multi-ticket test
+### Integration Tests (`--rounds`)
 
-```bash
-python test_translate.py
-```
+Creates `[Test]`-prefixed tickets on a live GLPI instance, runs a translation
+pass, and verifies output format and glossary enforcement. Each round targets
+a specific scenario:
 
-Creates 3 test tickets with bilingual followups to verify end-to-end translation.
-This script cleans up old test tickets first, then:
+| Round | Name | What it tests |
+|-------|------|---------------|
+| 1 | Rich-text HTML + mixed followups | HTML content, zh/en followup alternation |
+| 2 | Short text + long text | Very short strings and multi-paragraph content |
+| 3 | Low CJK ratio | Predominantly English text with a few Chinese words |
+| 4 | High CJK ratio | Chinese-dominant text with English tech terms |
+| 5 | Glossary verification | **Dynamic** — generated from `config.yaml` glossary at runtime |
+| 6 | English → Chinese | All-English tickets translated into Chinese |
 
-1. Check Ollama and GLPI connectivity
-2. Delete existing test tickets
-3. Create 3 tickets with Chinese/English content
-4. Add bilingual followups to each ticket
-5. Run one translation pass with debug logging
-6. Display all translated results
+Round 5 reads glossary terms from `config.yaml` and generates test tickets that
+embed those terms, verifying correct translation without hardcoding proprietary
+vocabulary in the test file.
 
 ## Run 24/7 (Background Service)
 
@@ -236,13 +261,12 @@ glpi-followup-translate/
 │   ├── __main__.py         # entry point
 │   ├── config.py           # YAML config loader
 │   ├── glpi_client.py      # GLPI REST API v2.3 client
-│   ├── main.py             # daemon loop, translation logic
+│   ├── main.py             # daemon loop, translation logic, log viewer
 │   └── ollama_client.py    # Ollama API client
 ├── config.yaml.example     # config template (safe to commit)
 ├── pyproject.toml          # pip package configuration
 ├── requirements.txt
-├── test_single_ticket.py   # quick single-ticket test
-├── test_translate.py       # multi-ticket test suite
+├── test_integration.py     # unified test suite (unit + integration)
 ├── README.md
 ├── README.zh-CN.md
 └── CLAUDE.md

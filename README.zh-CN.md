@@ -2,20 +2,22 @@
 
 使用本地 [Ollama](https://ollama.ai/) LLM 自动翻译 GLPI 工单。检测中文或英文内容并进行双向翻译（中文 ↔ 英文）。支持工单**标题**、**描述**、**跟进记录**、**任务**、**解决方案**和**审批**。
 
-> 📖 [English](README.md) | 简体中文
+📖 [English](README.md) | 简体中文
 
 ## 功能特性
 
 - 🔄 **守护进程 / 单次执行** — 定时轮询或单次运行
-- 🌐 **语言检测** — CJK 感知，支持中英混合内容
+- 🌐 **语言检测** — CJK 比例感知，支持中英混合内容
 - 🔀 **双向翻译** — 中文 → 英文，英文 → 中文
+- 📖 **术语表** — 专有名词指定翻译，确保术语一致性
 - 📝 **保留原文** — 翻译追加到原文后，不覆盖原始内容
 - 🎨 **富文本感知** — HTML 格式保留；冗余样式属性自动精简
 - 📦 **完整时间线** — 跟进、任务、解决方案、审批（请求 & 回复）
 - 🚫 **去重保护** — 内容哈希 + 内嵌标记，双重防重复
 - 🔄 **失败重试** — 翻译失败下轮自动重试
 - ✂️ **分段翻译** — 长文本自动分段，避免超时
-- ⚙️ **灵活配置** — 轮询间隔、模型、语言对、最小文本长度均可配置
+- 📋 **日志查看** — 通过 `--logs` 命令查看运行日志
+- ⚙️ **灵活配置** — 轮询间隔、模型、语言对、术语表、最小文本长度均可配置
 - 💻 **跨平台** — Windows、Linux、macOS
 
 ## 翻译目标
@@ -88,6 +90,8 @@ cp config.yaml.example config.yaml
 # 运行
 glpi-followup-translate              # 守护进程模式
 glpi-followup-translate --once      # 单次执行
+glpi-followup-translate --logs      # 查看最近日志
+glpi-followup-translate --logs --follow  # 实时跟踪日志
 glpi-followup-translate -c /path/to/config.yaml  # 指定配置文件
 ```
 
@@ -115,6 +119,7 @@ cp config.yaml.example config.yaml
 glpi-followup-translate                 # CLI 命令
 python -m glpi_followup_translate       # 或通过 python 模块
 glpi-followup-translate --once          # 单次执行
+glpi-followup-translate --logs          # 查看最近日志
 ```
 
 ## 配置说明
@@ -149,6 +154,15 @@ translation:
     zh-cn: "en"
     zh: "en"
     en: "zh-cn"
+  glossary:             # 专有名词术语表（按源语言分组）
+    zh-cn:
+      工单: "ticket"
+      数据库: "database"
+      服务器: "server"
+    en:
+      ticket: "工单"
+      database: "数据库"
+      server: "服务器"
 
 logging:
   level: "INFO"
@@ -171,42 +185,50 @@ logging:
 | `translation.min_text_length` | 最小翻译文本长度（0 = 不限） | `0` |
 | `translation.source_languages` | 检测的语言代码 | `["zh-cn", "zh", "en"]` |
 | `translation.target_language` | 源→目标语言映射 | `zh-cn→en, zh→en, en→zh-cn` |
+| `translation.glossary` | 按方向分组的术语表，确保专有名词翻译一致 | `{}`（空） |
 | `logging.level` | 日志级别（`DEBUG`、`INFO`、`WARNING`、`ERROR`） | `INFO` |
 | `logging.file` | 日志文件路径 | `glpi-translate.log` |
 
 ## 测试
 
-### 单工单测试
-
 ```bash
-python test_single_ticket.py
+# 仅运行单元测试（无需 GLPI/Ollama）
+python test_integration.py --unit
+
+# 单工单快速测试（仅 Round 1）
+python test_integration.py --single
+
+# 运行前 N 轮
+python test_integration.py --rounds 3
+
+# 运行全部轮次（完整测试）
+python test_integration.py --rounds 0
+
+# 查看所有测试轮次
+python test_integration.py --list-rounds
+
+# 清理本脚本创建的测试工单
+python test_integration.py --cleanup
 ```
 
-创建一个包含富文本（HTML）内容和中英文混合跟进记录的测试工单，运行一次翻译并验证格式。
+### 单元测试 (`--unit`)
 
-脚本将执行：
-1. 检查 Ollama 连接
-2. 测试 GLPI 认证
-3. 创建带 HTML 格式描述的测试工单
-4. 添加 3 条跟进记录（纯文本和 HTML 混合）
-5. 运行一次翻译
-6. 显示翻译结果
-7. 验证格式正确性（标题：`/` 分隔符，HTML：`<br>` 分隔符，纯文本：`\n\n` 分隔符）
+测试语言检测算法、CJK 比例计算、术语表后处理、输出清理和占位符往返替换，无需任何外部服务，速度快且结果确定。
 
-### 多工单测试
+### 集成测试 (`--rounds`)
 
-```bash
-python test_translate.py
-```
+在真实 GLPI 实例上创建带 `[Test]` 前缀的测试工单，运行翻译并验证输出格式和术语表执行情况。每轮针对特定场景：
 
-创建 3 个中英文混合的测试工单验证端到端翻译。会先清理旧测试工单，然后：
+| 轮次 | 名称 | 测试内容 |
+|------|------|----------|
+| 1 | 富文本 HTML + 混合跟进 | HTML 内容、中英文跟进交替 |
+| 2 | 短文本 + 长文本 | 极短字符串和多段落长文本 |
+| 3 | 低 CJK 比例 | 以英文为主、含少量中文的文本 |
+| 4 | 高 CJK 比例 | 以中文为主、含英文技术术语的文本 |
+| 5 | 术语表验证 | **动态生成** — 运行时从 `config.yaml` 读取术语表 |
+| 6 | 英文 → 中文 | 纯英文工单翻译为中文 |
 
-1. 检查 Ollama 和 GLPI 连接
-2. 删除已有测试工单
-3. 创建 3 个中英文混排的工单
-4. 为每个工单添加双语跟进记录
-5. 运行一次翻译（启用 DEBUG 日志）
-6. 展示所有翻译结果
+Round 5 从 `config.yaml` 读取术语表并动态生成测试工单，验证术语是否正确应用，测试文件中不硬编码任何专有名词。
 
 ## 7x24 后台运行
 
@@ -232,13 +254,12 @@ glpi-followup-translate/
 │   ├── __main__.py         # 入口点
 │   ├── config.py           # YAML 配置加载
 │   ├── glpi_client.py      # GLPI REST API v2.3 客户端
-│   ├── main.py             # 守护进程循环、翻译逻辑
+│   ├── main.py             # 守护进程循环、翻译逻辑、日志查看
 │   └── ollama_client.py    # Ollama API 客户端
 ├── config.yaml.example     # 配置模板（可安全提交）
 ├── pyproject.toml          # pip 包配置
 ├── requirements.txt
-├── test_single_ticket.py   # 单工单快速测试
-├── test_translate.py       # 多工单测试套件
+├── test_integration.py     # 统一测试套件（单元测试 + 集成测试）
 ├── README.md
 ├── README.zh-CN.md
 └── CLAUDE.md
