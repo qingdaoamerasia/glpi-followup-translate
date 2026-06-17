@@ -1,6 +1,6 @@
 # GLPI Followup Translate
 
-使用本地 [Ollama](https://ollama.ai/) LLM 自动翻译 GLPI 工单。检测中文或英文内容并进行双向翻译（中文 ↔ 英文）。支持工单**标题**、**描述**、**跟进记录**、**任务**、**解决方案**和**审批**。
+使用本地 [Ollama](https://ollama.com/) LLM 自动翻译 GLPI 工单。检测中文或英文内容并进行双向翻译（中文 ↔ 英文）。支持工单**标题**、**描述**、**跟进记录**、**任务**、**解决方案**和**审批**。
 
 📖 [English](README.md) | 简体中文
 
@@ -69,7 +69,7 @@ Checked the firewall rules and found that port 3306 was accidentally closed.
 ## 前置要求
 
 - Python 3.9+
-- [Ollama](https://ollama.ai/) 已安装并运行
+- [Ollama](https://ollama.com/) 已安装并运行
 - GLPI 实例已启用 API v2.3 和 OAuth2 认证
 
 ## 快速开始

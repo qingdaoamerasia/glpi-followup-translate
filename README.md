@@ -1,6 +1,6 @@
 # GLPI Followup Translate
 
-Auto-translate GLPI tickets using a local [Ollama](https://ollama.ai/) LLM.
+Auto-translate GLPI tickets using a local [Ollama](https://ollama.com/) LLM.
 Detects Chinese or English content and translates bidirectionally (zh ↔ en).
 Works with ticket **names**, **descriptions**, **followups**, **tasks**, **solutions**, and **validations**.
 
@@ -71,7 +71,7 @@ Checked the firewall rules and found that port 3306 was accidentally closed.
 ## Requirements
 
 - Python 3.9+
-- [Ollama](https://ollama.ai/) installed and running
+- [Ollama](https://ollama.com/) installed and running
 - GLPI instance with API v2.3 and OAuth2 enabled
 
 ## Quick Start
