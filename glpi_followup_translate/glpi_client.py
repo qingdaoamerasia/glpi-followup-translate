@@ -35,6 +35,15 @@ class GlpiClient:
         self.session = requests.Session()
         # Accept self-signed certificates on internal GLPI servers
         self.session.verify = False
+        # Send a fixed PHPSESSID cookie so GLPI reuses the same PHP session
+        # file instead of creating a new one for every API request. Without
+        # this, GLPI's Symfony framework creates a new session file per
+        # request (even for stateless Bearer-token API calls), which causes
+        # inode exhaustion on the server over time.
+        self.session.cookies.set(
+            "PHPSESSID", "glpi_translate_client",
+            domain=self.api_url.split("//")[-1].split("/")[0].split(":")[0],
+        )
         # Don't set Content-Type globally - let requests handle it
         # Cached true_max_ticket_id from the last _scan_tickets_by_id run.
         # Persisted via ProcessedState so the daemon avoids re-probing IDs
@@ -46,11 +55,16 @@ class GlpiClient:
         self._load_token_cache()
 
     def _load_token_cache(self) -> None:
-        """Load OAuth2 token from the cache file if it exists and is valid.
+        """Load OAuth2 token and HTTP session cookies from the cache file.
 
-        Enables cross-process token reuse: instead of creating a new OAuth2
-        session on every process start, subsequent processes read the cached
-        token written by a previous process.
+        Enables cross-process token reuse and GLPI session persistence:
+        instead of creating a new OAuth2 session and GLPI PHP session on
+        every process start, subsequent processes read the cached token
+        and cookies written by a previous process.
+
+        Persisting cookies means the GLPI server reuses the same PHP
+        session file instead of creating a new one per process, which
+        prevents inode exhaustion from millions of session files.
 
         Uses ``getattr(self, "token_cache_file", None)`` so that unit-test
         mocks created via ``object.__new__(GlpiClient)`` (which bypass
@@ -85,6 +99,13 @@ class GlpiClient:
             self.session.headers.update(
                 {"Authorization": f"Bearer {self.access_token}"}
             )
+
+            # Restore HTTP session cookies so GLPI reuses the same PHP session
+            cached_cookies = data.get("cookies", {})
+            if cached_cookies:
+                self.session.cookies.update(cached_cookies)
+                logger.debug("Loaded %d cached cookie(s)", len(cached_cookies))
+
             logger.debug(
                 "Loaded cached OAuth2 token (expires in %ds)",
                 int(self.token_expires_at - time.time()),
@@ -95,12 +116,16 @@ class GlpiClient:
             logger.debug("Failed to load token cache: %s", e)
 
     def _save_token_cache(self) -> None:
-        """Persist the current OAuth2 token to the cache file.
+        """Persist the current OAuth2 token and HTTP session cookies.
 
         Writes to a temporary file first, then atomically replaces the
         cache file via ``os.replace`` to avoid partial reads by other
         processes. Failures are logged at debug level and silently
         ignored — token caching is an optimization, not a requirement.
+
+        Cookies are saved alongside the token so that subsequent
+        processes can reuse the same GLPI PHP session, preventing
+        inode exhaustion from millions of session files on the server.
 
         Uses ``getattr(self, "token_cache_file", None)`` for unit-test
         mock compatibility.
@@ -110,10 +135,13 @@ class GlpiClient:
             return
 
         try:
+            # Convert cookie jar to a plain dict for JSON serialization
+            cookies_dict = dict(self.session.cookies)
             payload = {
                 "access_token": self.access_token,
                 "refresh_token": self.refresh_token,
                 "token_expires_at": self.token_expires_at,
+                "cookies": cookies_dict,
             }
             # Atomic write: temp file + os.replace
             tmp_file = f"{cache_file}.tmp"

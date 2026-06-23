@@ -1513,6 +1513,10 @@ def run_once(
 
     state.save()
 
+    # Persist HTTP session cookies so the next process start reuses the
+    # same GLPI PHP session instead of creating a new one.
+    glpi._save_token_cache()
+
     logger.info(
         "Optimization: %d fast-skipped, %d fully checked (out of %d tickets)",
         stats["tickets_fast_skipped"],
