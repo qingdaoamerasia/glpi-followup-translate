@@ -66,8 +66,8 @@ translation:
   #     <source_lang>:
   #       <source_term>: "<target_translation>"
   #
-  # Glossary terms are included in the LLM prompt AND enforced via
-  # post-processing (find-and-replace) for maximum reliability.
+  # Source terms are replaced with placeholders before translation and
+  # restored to target terms after, for maximum reliability with small models.
   #
   # Example:
   glossary:

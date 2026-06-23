@@ -260,6 +260,7 @@ glpi-followup-translate/
 ├── pyproject.toml          # pip 包配置
 ├── requirements.txt
 ├── test_integration.py     # 统一测试套件（单元测试 + 集成测试）
+├── CHANGELOG.md
 ├── README.md
 ├── README.zh-CN.md
 └── CLAUDE.md

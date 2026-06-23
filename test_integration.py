@@ -15,6 +15,8 @@ import json
 import sys
 import os
 import logging
+import re
+from types import SimpleNamespace
 
 # Set UTF-8 encoding for Windows console
 if sys.platform == "win32":
@@ -31,6 +33,7 @@ from glpi_followup_translate.main import (
     setup_logging,
     run_once,
     ProcessedState,
+    TranslationError,
     has_html_tags,
     strip_html,
     detect_language_with_fallback,
@@ -40,6 +43,7 @@ from glpi_followup_translate.main import (
     _get_glossary,
     _replace_with_placeholders,
     _restore_placeholders,
+    _fix_html_tags,
 )
 
 MARKER = "[AUTO-TRANSLATED]"
@@ -118,7 +122,7 @@ ROUNDS = [
     # ── Round 3: Low CJK ratio (mostly English, few Chinese) ──────────────────
     {
         "name": "Low CJK ratio (mostly English)",
-        "description": "Text that is predominantly English with a few Chinese words — should still detect as zh-cn",
+        "description": "English-dominant content with few CJK terms — content detected as English, translated to Chinese",
         "tickets": [
             {
                 "name": "Please check the 服务器 status",
@@ -364,13 +368,26 @@ def test_unit_language_detection():
     cases = [
         ("服务器无法连接数据库", "zh-cn", "Pure Chinese"),
         ("The server is down and needs restart", "en", "Pure English"),
-        ("Please check 数据库 connection status", "zh-cn", "Low CJK ratio"),
-        ("MySQL connection pool exhausted 连接池耗尽问题需要处理", "zh-cn", "Mixed with significant CJK"),
+        ("Please check 数据库 connection status", "zh-cn", "Short: 3 CJK >= 3 threshold"),
+        ("MySQL connection pool exhausted 连接池耗尽问题需要处理", "zh-cn", "Medium: 8 CJK at 23% ratio"),
         ("Yes", "en", "Short English"),
         ("OK", "en", "Very short ASCII"),
-        ("检查了firewall rules发现port 3306被closed了", "zh-cn", "Chinese with English tech terms"),
-        ("The DHCP server assigned 新的IP地址 to the client machine", "zh-cn", "Low CJK ratio override"),
+        ("检查了firewall rules发现port 3306被closed了", "zh-cn", "Short: 8 CJK >= 3 threshold"),
+        ("The DHCP server assigned 新的IP地址 to the client machine on the network floor",
+         "en", "Medium: 4 CJK < 8 threshold, stays English"),
         ("Réunion de service", None, "French (not in supported)"),
+        # Tiered threshold edge cases
+        ("Dear team, please find attached the quarterly report. "
+         "Best regards, 青岛美亚国际 Qingdao Amerasia International",
+         "en", "Long English email with 6 CJK in signature (<8 threshold)"),
+        ("服务器数据库连接池问题需要紧急处理，请尽快修复", "zh-cn",
+         "Medium Chinese: 18 CJK at 100% ratio"),
+        ("Please check the 服务器数据库连接 status immediately", "zh-cn",
+         "Medium: 8 CJK at 15% ratio (>=8 CJK, >=14% override)"),
+        ("The production server went down at 3:42 AM. "
+         "All services on the 数据库 cluster are unresponsive. "
+         "Please check the 防火墙 logs and 路由器 configuration.",
+         "en", "Medium: 9 CJK at 7.6% ratio (< 14% override, stays English)"),
     ]
 
     print("\n=== Unit Test: Language Detection ===")
@@ -422,6 +439,8 @@ def test_unit_glossary(config=None):
     cases = [
         ("The server connected to the data base.", {"data base": "database"},
          "The server connected to the database.", "English term replacement"),
+        ("The AMERASIA review is complete.", {"Amerasia": "美亚"},
+         "The 美亚 review is complete.", "English term replacement is case-insensitive"),
         ("Check the serverless configuration.", {"server": "服务器"},
          "Check the serverless configuration.", "No partial match (server in serverless)"),
         ("No changes needed here.", {},
@@ -475,6 +494,131 @@ def test_unit_glossary(config=None):
     return failed == 0
 
 
+def test_unit_ticket_pagination():
+    """Test ticket pagination walks past GLPI's 100-item response cap."""
+    passed = failed = 0
+
+    print("\n=== Unit Test: Ticket Pagination ===")
+
+    header_client = object.__new__(GlpiClient)
+    captured = {}
+
+    def fake_request(method, endpoint, json_data=None, params=None, headers=None):
+        captured["method"] = method
+        captured["endpoint"] = endpoint
+        captured["params"] = params
+        captured["headers"] = headers
+        return [{"id": 101}]
+
+    header_client._request = fake_request
+    header_result = header_client.get_tickets(limit=100, offset=100)
+    ok0 = (
+        header_result == [{"id": 101}]
+        and captured.get("headers", {}).get("Range") == "100-199"
+    )
+    passed += ok0
+    failed += not ok0
+    print(f"  {'OK' if ok0 else 'FAIL'} [Uses HTTP Range header for ticket pages]")
+    if not ok0:
+        print(f"    Captured request: {captured}")
+
+    client = object.__new__(GlpiClient)
+    calls = []
+    pages = {
+        0: [{"id": i} for i in range(1, 101)],
+        100: [{"id": i} for i in range(101, 201)],
+        200: [{"id": i} for i in range(201, 216)],
+    }
+
+    def fake_get_tickets(limit=100, offset=0, sort="", order="", range_style="plain"):
+        calls.append((limit, offset, sort, order, range_style))
+        return pages.get(offset, [])
+
+    client.get_tickets = fake_get_tickets
+    tickets = client.get_all_tickets(page_size=100)
+    ok1 = len(tickets) == 215 and tickets[-1]["id"] == 215
+    passed += ok1
+    failed += not ok1
+    print(f"  {'OK' if ok1 else 'FAIL'} [Fetched 215 tickets across 3 pages]")
+    if not ok1:
+        print(f"    Got {len(tickets)} tickets; calls={calls}")
+
+    repeat_client = object.__new__(GlpiClient)
+    repeat_calls = []
+
+    def fake_repeating_get_tickets(limit=100, offset=0, sort="", order="", range_style="plain"):
+        repeat_calls.append((limit, offset, sort, order, range_style))
+        return [{"id": i} for i in range(101, 201)]
+
+    def fake_get_ticket(ticket_id):
+        if 1 <= ticket_id <= 200:
+            return {"id": ticket_id}
+        raise RuntimeError("not found")
+
+    repeat_client.get_tickets = fake_repeating_get_tickets
+    repeat_client.get_ticket = fake_get_ticket
+    repeated = repeat_client.get_all_tickets(page_size=100)
+    repeated_ids = {ticket["id"] for ticket in repeated}
+    ok2 = len(repeated_ids) == 200 and 1 in repeated_ids and 200 in repeated_ids
+    passed += ok2
+    failed += not ok2
+    print(f"  {'OK' if ok2 else 'FAIL'} [Falls back to ID scan when list pagination repeats]")
+    if not ok2:
+        print(f"    Got {len(repeated_ids)} unique tickets; calls={repeat_calls}")
+
+    print(f"\n  Ticket pagination: {passed} passed, {failed} failed")
+    return failed == 0
+
+
+def test_unit_glossary_verification():
+    """Test integration glossary verification fails when required terms are missing."""
+    passed = failed = 0
+    config = SimpleNamespace(
+        translation=SimpleNamespace(
+            glossary={"en": {"Amerasia": "美亚", "Baishan": "白珊"}}
+        )
+    )
+
+    print("\n=== Unit Test: Glossary Verification ===")
+
+    ok_content = (
+        "The AMERASIA team contacted Baishan.\n\n"
+        f"{MARKER}\n"
+        "美亚团队联系了白珊。"
+    )
+    ok1 = verify_glossary_terms(ok_content, config, "en") is True
+    passed += ok1
+    failed += not ok1
+    print(f"  {'OK' if ok1 else 'FAIL'} [All required content terms present]")
+
+    bad_content = (
+        "The AMERASIA team contacted Baishan.\n\n"
+        f"{MARKER}\n"
+        "Amerasia team contacted 白珊。"
+    )
+    ok2 = verify_glossary_terms(bad_content, config, "en") is False
+    passed += ok2
+    failed += not ok2
+    print(f"  {'OK' if ok2 else 'FAIL'} [Missing translated content term fails]")
+
+    ok_title = verify_glossary_in_title(
+        "AMERASIA System Upgrade / 美亚系统升级", config, "en"
+    ) is True
+    passed += ok_title
+    failed += not ok_title
+    print(f"  {'OK' if ok_title else 'FAIL'} [Title term verification is case-insensitive]")
+
+    bad_title = verify_glossary_in_title(
+        "AMERASIA System Upgrade / Amerasia系统升级", config, "en"
+    ) is False
+    passed += bad_title
+    failed += not bad_title
+    print(f"  {'OK' if bad_title else 'FAIL'} [Missing translated title term fails]")
+
+    print(f"\n  Glossary verification: {passed} passed, {failed} failed")
+    return failed == 0
+
+
 def test_unit_output_cleanup():
     """Test translation output cleanup for small model artifacts."""
     passed = failed = 0
@@ -486,6 +630,28 @@ def test_unit_output_cleanup():
          "服务器已关闭。", "Strip Chinese glossary echo"),
         ("Normal translation output.", "Normal translation output.", "No change needed"),
         ("Good translation\n\nChinese (Simplified):", "Good translation", "Strip trailing language label"),
+        # Leading instruction echoes (new patterns)
+        ("英语到中文（简化版）翻译：已将VPN会话超时时间从30分钟改为480分钟。",
+         "已将VPN会话超时时间从30分钟改为480分钟。", "Strip Chinese-direction echo (en→zh)"),
+        ("Chinese (Simplified) to English translation: The server has been restarted.",
+         "The server has been restarted.", "Strip English prompt echo (zh→en)"),
+        ("English to Chinese (Simplified) translation: 服务器已重启。",
+         "服务器已重启。", "Strip English prompt echo (en→zh)"),
+        ("中文到英语翻译：The firewall rules were updated.",
+         "The firewall rules were updated.", "Strip Chinese-direction echo (zh→en)"),
+        ("Chinese (Simplified): 服务器已关闭。",
+         "服务器已关闭。", "Strip bare language label prefix"),
+        # Trailing Chinese-direction echoes (observed in production)
+        ("已将VPN会话超时时间从30分钟更新为480分钟。\n\n英语到中文（简化版）翻译：\n将VPN会话超时时间从30分钟更新...",
+         "已将VPN会话超时时间从30分钟更新为480分钟。", "Strip trailing Chinese echo (en→zh)"),
+        ("The server has been restarted successfully.\n\nChinese (Simplified): 服务器已成功重启。",
+         "The server has been restarted successfully.", "Strip trailing Chinese label + re-translation"),
+        # Parenthetical alternative translations (observed in production, ticket 334)
+        ("员工报告称VPN连接中断。"
+         "（简化版英文翻译：员工反馈说，使用该软件大约30分钟后VPN连接就会断开。）",
+         "员工报告称VPN连接中断。", "Strip parenthetical simplified translation (fullwidth parens)"),
+        ("VPN connection drops.(简化版中文翻译：VPN连接断开。)",
+         "VPN connection drops.", "Strip parenthetical simplified translation (halfwidth parens)"),
     ]
 
     print("\n=== Unit Test: Output Cleanup ===")
@@ -563,14 +729,35 @@ def test_unit_placeholders(config=None):
         if not ok4:
             print(f"    Got: '{restored2}'")
 
-    # Test 3: Regex fallback for spaces
+    # Test 3: Regex fallback for spacing/bracket variations
     test_mapping = {0: "TargetTerm"}
-    spaced_input = "The GLS 0 GLS was preserved."
+    spaced_input = "The [ GLS : 0 ] was preserved."
     restored3 = _restore_placeholders(spaced_input, test_mapping)
     ok5 = "TargetTerm" in restored3
     passed += ok5
     failed += not ok5
-    print(f"  {'OK' if ok5 else 'FAIL'} [Regex fallback: spaces in GLS 0 GLS]")
+    print(f"  {'OK' if ok5 else 'FAIL'} [Regex fallback: spaces in [ GLS : 0 ]]")
+
+    # Test 3b: No brackets fallback
+    no_bracket_input = "The GLS:0 was preserved."
+    restored3b = _restore_placeholders(no_bracket_input, test_mapping)
+    ok5b = "TargetTerm" in restored3b
+    passed += ok5b
+    failed += not ok5b
+    print(f"  {'OK' if ok5b else 'FAIL'} [Regex fallback: no brackets GLS:0]")
+
+    # Test 3c: English source terms are matched case-insensitively
+    case_source = "The AMERASIA system is stable."
+    case_modified, case_mapping = _replace_with_placeholders(
+        case_source, {"Amerasia": "美亚"}
+    )
+    case_restored = _restore_placeholders(case_modified, case_mapping)
+    ok5c = "美亚" in case_restored and "AMERASIA" not in case_restored
+    passed += ok5c
+    failed += not ok5c
+    print(f"  {'OK' if ok5c else 'FAIL'} [Case-insensitive English placeholder replacement]")
+    if not ok5c:
+        print(f"    Got: '{case_restored}'")
 
     # Test 4: No glossary terms in source
     no_term_source = "Plain text with no special terms."
@@ -579,6 +766,51 @@ def test_unit_placeholders(config=None):
     passed += ok6
     failed += not ok6
     print(f"  {'OK' if ok6 else 'FAIL'} [No terms in source → no placeholders]")
+
+    # Test 6: CJK-ASCII boundary space removal
+    cjk_space_mapping = {0: "Amerasia"}
+    # Simulate model outputting space after placeholder before CJK
+    cjk_input1 = "The [GLS:0] 系统 upgrade is complete."
+    restored6a = _restore_placeholders(cjk_input1, cjk_space_mapping)
+    ok9 = "Amerasia系统" in restored6a
+    passed += ok9
+    failed += not ok9
+    print(f"  {'OK' if ok9 else 'FAIL'} [CJK space removed: 'Amerasia 系统' → 'Amerasia系统']")
+    if not ok9:
+        print(f"    Got: '{restored6a}'")
+
+    # Space before English term from CJK
+    cjk_input2 = "报告由 [GLS:0] 团队完成。"
+    restored6b = _restore_placeholders(cjk_input2, cjk_space_mapping)
+    ok10 = "由Amerasia" in restored6b
+    passed += ok10
+    failed += not ok10
+    print(f"  {'OK' if ok10 else 'FAIL'} [CJK space removed: '由 Amerasia' → '由Amerasia']")
+    if not ok10:
+        print(f"    Got: '{restored6b}'")
+
+    # CJK-CJK boundary space (glossary term followed by CJK char with space)
+    cjk_cjk_mapping = {0: "美亚"}
+    cjk_input3 = "[GLS:0] 系统升级报告已完成。"
+    restored6c = _restore_placeholders(cjk_input3, cjk_cjk_mapping)
+    ok10b = "美亚系统" in restored6c and "美亚 系统" not in restored6c
+    passed += ok10b
+    failed += not ok10b
+    print(f"  {'OK' if ok10b else 'FAIL'} [CJK-CJK space removed: '美亚 系统' → '美亚系统']")
+    if not ok10b:
+        print(f"    Got: '{restored6c}'")
+
+    # Test 7: Multiple English terms with CJK adjacent spacing
+    if len(items) >= 2:
+        multi_cjk_mapping = {0: "Amerasia", 1: "Baishan"}
+        cjk_input3 = "[GLS:0] [GLS:1] 的系统升级报告"
+        restored7 = _restore_placeholders(cjk_input3, multi_cjk_mapping)
+        ok11 = "Amerasia Baishan的" in restored7 and "Baishan 的" not in restored7
+        passed += ok11
+        failed += not ok11
+        print(f"  {'OK' if ok11 else 'FAIL'} [Adjacent English + CJK: 'Amerasia Baishan的系统升级报告']")
+        if not ok11:
+            print(f"    Got: '{restored7}'")
 
     # Test 5: CJK term handling (if any CJK terms exist)
     cjk_terms = [(s, t) for s, t in items if any('\u4e00' <= c <= '\u9fff' for c in s)]
@@ -602,14 +834,206 @@ def test_unit_placeholders(config=None):
     return failed == 0
 
 
+def test_unit_translation_error():
+    """Test that process_text raises TranslationError on translation failure."""
+    from glpi_followup_translate.main import process_text
+    from unittest.mock import MagicMock
+
+    passed = failed = 0
+
+    # Create mock config
+    config = MagicMock()
+    config.translation.prefix = "[AUTO-TRANSLATED]"
+    config.translation.min_text_length = 0
+    config.translation.source_languages = ["zh-cn", "en"]
+    config.translation.target_language = {"zh-cn": "en", "en": "zh-cn"}
+    config.translation.glossary = {}
+
+    print("\n=== Unit Test: TranslationError ===")
+
+    # Test 1: Ollama returns None → TranslationError
+    ollama = MagicMock()
+    ollama.translate.return_value = None
+    try:
+        process_text("服务器无法连接", 1, "followup", config, ollama)
+        ok1 = False  # Should have raised
+    except TranslationError:
+        ok1 = True
+    except Exception as e:
+        ok1 = False
+        print(f"    Unexpected exception: {e}")
+    passed += ok1
+    failed += not ok1
+    print(f"  {'OK' if ok1 else 'FAIL'} [Ollama returns None → TranslationError]")
+
+    # Test 2: Ollama returns identical text → TranslationError
+    ollama2 = MagicMock()
+    ollama2.translate.return_value = "服务器无法连接"  # Same as input
+    try:
+        process_text("服务器无法连接", 2, "followup", config, ollama2)
+        ok2 = False
+    except TranslationError:
+        ok2 = True
+    except Exception as e:
+        ok2 = False
+        print(f"    Unexpected exception: {e}")
+    passed += ok2
+    failed += not ok2
+    print(f"  {'OK' if ok2 else 'FAIL'} [Identical output → TranslationError]")
+
+    # Test 3: Nothing to translate → returns None (no exception)
+    ollama3 = MagicMock()
+    result3 = process_text("[AUTO-TRANSLATED] already done", 3, "followup", config, ollama3)
+    ok3 = result3 is None and not ollama3.translate.called
+    passed += ok3
+    failed += not ok3
+    print(f"  {'OK' if ok3 else 'FAIL'} [Already translated → None (no TranslationError)]")
+
+    # Test 4: Successful translation → returns translated text
+    ollama4 = MagicMock()
+    ollama4.translate.return_value = "The server cannot connect"
+    result4 = process_text("服务器无法连接", 4, "followup", config, ollama4)
+    ok4 = result4 == "The server cannot connect"
+    passed += ok4
+    failed += not ok4
+    print(f"  {'OK' if ok4 else 'FAIL'} [Success → returns translated text]")
+
+    # Test 5: First sentence copied from source → TranslationError
+    # Model translates the rest but echoes the first sentence verbatim
+    ollama5 = MagicMock()
+    src5 = "IT团队已经分析了整个网络拓扑结构，发现问题出在核心交换机上。该交换机在过去三天内多次出现过载告警，每次持续约15分钟。"
+    # First sentence identical to source, rest translated
+    tgt5 = "IT团队已经分析了整个网络拓扑结构，发现问题出在核心交换机上。The switch has experienced overload alerts multiple times, each lasting about 15 minutes."
+    ollama5.translate.return_value = tgt5
+    try:
+        process_text(src5, 5, "followup", config, ollama5)
+        ok5 = False
+    except TranslationError as e:
+        ok5 = "first sentence" in str(e)
+    except Exception as e:
+        ok5 = False
+        print(f"    Unexpected exception: {e}")
+    passed += ok5
+    failed += not ok5
+    print(f"  {'OK' if ok5 else 'FAIL'} [First sentence copied → TranslationError]")
+
+    print(f"\n  TranslationError: {passed} passed, {failed} failed")
+    return failed == 0
+
+
+def test_unit_setup_logging_no_duplicates():
+    """Test that setup_logging doesn't accumulate duplicate handlers."""
+    from glpi_followup_translate.main import setup_logging
+    from unittest.mock import MagicMock
+    import tempfile
+
+    passed = failed = 0
+
+    # Create mock config with temp log file
+    config = MagicMock()
+    config.logging.level = "INFO"
+    with tempfile.NamedTemporaryFile(suffix=".log", delete=False) as f:
+        config.logging.file = f.name
+
+    # Get the logger
+    test_logger = logging.getLogger("glpi_followup_translate")
+
+    print("\n=== Unit Test: Setup Logging No Duplicates ===")
+
+    try:
+        # Call setup_logging twice
+        setup_logging(config)
+        handler_count_1 = len(test_logger.handlers)
+        setup_logging(config)
+        handler_count_2 = len(test_logger.handlers)
+
+        ok1 = handler_count_1 == 2  # console + file
+        passed += ok1
+        failed += not ok1
+        print(f"  {'OK' if ok1 else 'FAIL'} [First call: {handler_count_1} handlers (expected 2)]")
+
+        ok2 = handler_count_2 == 2  # should still be 2, not 4
+        passed += ok2
+        failed += not ok2
+        print(f"  {'OK' if ok2 else 'FAIL'} [Second call: {handler_count_2} handlers (expected 2)]")
+    finally:
+        # Cleanup
+        test_logger.handlers.clear()
+        try:
+            os.unlink(config.logging.file)
+        except OSError:
+            pass
+
+    print(f"\n  Setup logging: {passed} passed, {failed} failed")
+    return failed == 0
+
+
+def test_unit_html_tag_fix():
+    """Test _fix_html_tags corrects model-corrupted HTML tag names."""
+    passed = failed = 0
+
+    cases = [
+        # (original, translated, expected, description)
+        (
+            '<p>Text <span>highlighted</span> here</p>',
+            '<p>文本 <spans>高亮</spans> 这里</p>',
+            '<p>文本 <span>高亮</span> 这里</p>',
+            "Fix <spans> -> <span> (observed in ticket 327 FU#2)",
+        ),
+        (
+            '<p>Paragraph</p>',
+            '<p>段落</p>',
+            '<p>段落</p>',
+            "No-op when tags are correct",
+        ),
+        (
+            'No HTML here at all',
+            '这里没有HTML',
+            '这里没有HTML',
+            "No-op when original has no HTML",
+        ),
+        (
+            '<strong>Bold</strong> and <em>italic</em>',
+            '<strong>粗体</strong> and <em>斜体</em>',
+            '<strong>粗体</strong> and <em>斜体</em>',
+            "No-op when only standard tags present",
+        ),
+        (
+            '<p><span class="x">Styled</span></p>',
+            '<p><spanx>样式化</spanx></p>',
+            '<p><span>样式化</span></p>',
+            "Fix <spanx> -> <span>",
+        ),
+    ]
+
+    print("\n=== Unit Test: HTML Tag Fix ===")
+    for original, translated, expected, desc in cases:
+        result = _fix_html_tags(original, translated)
+        ok = result == expected
+        passed += ok
+        failed += not ok
+        print(f"  {'OK' if ok else 'FAIL'} [{desc}]")
+        if not ok:
+            print(f"    Expected: '{expected}'")
+            print(f"    Got:      '{result}'")
+
+    print(f"\n  HTML tag fix: {passed} passed, {failed} failed")
+    return failed == 0
+
+
 def run_unit_tests(config=None):
     """Run all unit tests."""
     results = []
     results.append(("Language Detection", test_unit_language_detection()))
     results.append(("CJK Ratio", test_unit_cjk_ratio()))
     results.append(("Glossary", test_unit_glossary(config)))
+    results.append(("Ticket Pagination", test_unit_ticket_pagination()))
+    results.append(("Glossary Verification", test_unit_glossary_verification()))
     results.append(("Output Cleanup", test_unit_output_cleanup()))
     results.append(("Placeholders", test_unit_placeholders(config)))
+    results.append(("TranslationError", test_unit_translation_error()))
+    results.append(("Setup Logging", test_unit_setup_logging_no_duplicates()))
+    results.append(("HTML Tag Fix", test_unit_html_tag_fix()))
 
     print("\n" + "=" * 60)
     print("UNIT TEST SUMMARY:")
@@ -672,6 +1096,29 @@ def verify_title_format(name):
         return False
 
 
+def _term_in_text(term, text):
+    """Return True if a glossary term appears in text."""
+    if not term or not text:
+        return False
+    has_cjk = any('\u4e00' <= c <= '\u9fff' or '\u3400' <= c <= '\u4dbf' for c in term)
+    if has_cjk:
+        return term in text
+    return re.search(r'\b' + re.escape(term) + r'\b', text, flags=re.IGNORECASE) is not None
+
+
+def _split_translated_content(content):
+    """Return (original, translation) portions from translated content."""
+    if f"<strong>{MARKER}</strong>" in content:
+        parts = content.split(f"<strong>{MARKER}</strong>", 1)
+        if len(parts) == 2:
+            return parts[0], parts[1]
+    if MARKER in content:
+        parts = content.split(MARKER, 1)
+        if len(parts) == 2:
+            return parts[0], parts[1]
+    return content, ""
+
+
 def verify_glossary_terms(content, config, source_lang):
     """Verify that glossary terms from config.yaml are correctly applied in the translation.
 
@@ -686,50 +1133,40 @@ def verify_glossary_terms(content, config, source_lang):
         print(f"  -- GLOSSARY: no glossary configured for '{source_lang}', skipping")
         return True
 
-    # Extract the translation portion (after MARKER)
-    translation = ""
-    if f"<strong>{MARKER}</strong>" in content:
-        parts = content.split(f"<strong>{MARKER}</strong>", 1)
-        if len(parts) == 2:
-            translation = parts[1]
-    elif MARKER in content:
-        parts = content.split(MARKER, 1)
-        if len(parts) == 2:
-            translation = parts[1]
+    original, translation = _split_translated_content(content)
 
     if not translation:
         print(f"  -- GLOSSARY: could not extract translation portion, skipping")
         return True
 
-    found = 0
-    missing = 0
+    required = []
     checked_terms = []
 
     for src_term, tgt_term in glossary.items():
         if src_term == tgt_term:
             continue  # Skip identity mappings (e.g., QAIS→QAIS)
-        # Check if source term was in the original (roughly — we check translation for target)
-        if tgt_term in translation:
-            found += 1
+        if not _term_in_text(src_term, original):
+            continue
+
+        required.append((src_term, tgt_term))
+        if _term_in_text(tgt_term, translation):
             checked_terms.append(f"{src_term}→{tgt_term} ✓")
         else:
-            # The term might not have been in the source text, so only flag
-            # if the source term also doesn't appear (meaning it wasn't relevant)
-            checked_terms.append(f"{src_term}→{tgt_term} ?")
+            checked_terms.append(f"{src_term}→{tgt_term} ✗")
 
-    if found > 0:
-        print(f"  OK GLOSSARY: {found} term(s) correctly applied")
+    missing = [item for item in required if not _term_in_text(item[1], translation)]
+    if required and not missing:
+        print(f"  OK GLOSSARY: {len(required)} required term(s) correctly applied")
         for t in checked_terms:
             print(f"       {t}")
         return True
-    elif checked_terms:
-        print(f"  !! GLOSSARY: no glossary target terms found in translation")
+    elif missing:
+        print(f"  XX GLOSSARY: {len(missing)} required term(s) missing from translation")
         for t in checked_terms:
             print(f"       {t}")
-        # Not necessarily a failure — source text might not have contained these terms
-        return True
+        return False
     else:
-        print(f"  -- GLOSSARY: all terms are identity mappings, nothing to check")
+        print(f"  -- GLOSSARY: no configured terms appeared in the source text")
         return True
 
 
@@ -739,16 +1176,25 @@ def verify_glossary_in_title(name, config, source_lang):
     if not glossary or " / " not in name:
         return True
 
-    translated_title = name.split(" / ", 1)[1]
-    found = []
+    original_title, translated_title = name.split(" / ", 1)
+    checked_terms = []
+    missing = []
     for src_term, tgt_term in glossary.items():
         if src_term == tgt_term:
             continue
-        if tgt_term in translated_title:
-            found.append(f"{src_term}→{tgt_term}")
+        if not _term_in_text(src_term, original_title):
+            continue
+        if _term_in_text(tgt_term, translated_title):
+            checked_terms.append(f"{src_term}→{tgt_term} ✓")
+        else:
+            checked_terms.append(f"{src_term}→{tgt_term} ✗")
+            missing.append((src_term, tgt_term))
 
-    if found:
-        print(f"  OK TITLE GLOSSARY: {', '.join(found)}")
+    if checked_terms and not missing:
+        print(f"  OK TITLE GLOSSARY: {', '.join(checked_terms)}")
+    elif missing:
+        print(f"  XX TITLE GLOSSARY: missing {', '.join(checked_terms)}")
+        return False
     return True
 
 
@@ -861,16 +1307,22 @@ def run_round(glpi, ollama, config, state, round_idx):
             if not verify_title_format(name):
                 all_ok = False
 
-            # Detect source language for glossary verification
+            # Detect source language for title glossary verification
             orig_name = name.split(" / ")[0] if " / " in name else name
-            source_lang = detect_language_with_fallback(orig_name, supported)
+            title_source_lang = detect_language_with_fallback(orig_name, supported)
 
             if not verify_content_format("CONTENT", content, tid):
                 all_ok = False
             # Check glossary terms in content translation
-            verify_glossary_terms(content, config, source_lang)
+            content_original, _ = _split_translated_content(content)
+            content_lang = detect_language_with_fallback(
+                strip_html(content_original).strip(), supported
+            )
+            if not verify_glossary_terms(content, config, content_lang):
+                all_ok = False
             # Check glossary terms in title translation
-            verify_glossary_in_title(name, config, source_lang)
+            if not verify_glossary_in_title(name, config, title_source_lang):
+                all_ok = False
 
             for fu in glpi.get_ticket_followups(tid):
                 fc = fu.get("content", "")
@@ -882,7 +1334,8 @@ def run_round(glpi, ollama, config, state, round_idx):
                     fu_original = strip_html(fu_original).strip()
                     fu_lang = detect_language_with_fallback(fu_original, supported)
                     # Check glossary in followup translation
-                    verify_glossary_terms(fc, config, fu_lang)
+                    if not verify_glossary_terms(fc, config, fu_lang):
+                        all_ok = False
         except Exception as e:
             print(f"  Error reading ticket #{tid}: {e}")
             all_ok = False

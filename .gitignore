@@ -17,6 +17,7 @@ env/
 # IDE
 .vscode/
 .idea/
+.workbuddy/
 *.swp
 *.swo
 
@@ -37,3 +38,7 @@ cache/
 processed_state.json
 processed_followups.json
 .test_ticket_ids.json
+
+# OAuth2 token cache (contains sensitive access/refresh tokens)
+.glpi_token_cache.json
+.glpi_token_cache.json.tmp

@@ -267,6 +267,7 @@ glpi-followup-translate/
 ├── pyproject.toml          # pip package configuration
 ├── requirements.txt
 ├── test_integration.py     # unified test suite (unit + integration)
+├── CHANGELOG.md
 ├── README.md
 ├── README.zh-CN.md
 └── CLAUDE.md
