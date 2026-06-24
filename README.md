@@ -6,6 +6,20 @@ Works with ticket **names**, **descriptions**, **followups**, **tasks**, **solut
 
 📖 English | [简体中文](README.zh-CN.md)
 
+## Table of Contents
+
+- [Features](#features)
+- [Translation Targets](#translation-targets)
+- [Translation Format](#translation-format)
+- [Requirements](#requirements)
+- [Quick Start](#quick-start)
+- [Configuration](#configuration)
+- [CLI Reference](#cli-reference)
+- [Testing](#testing)
+- [Run 24/7](#run-247-background-service)
+- [Session Cleanup](#session-cleanup-glpi-inode-exhaustion)
+- [Project Structure](#project-structure)
+
 ## Features
 
 - 🔄 **Daemon or one-shot** — polling loop or single-pass mode
