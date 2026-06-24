@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.4.0] — 2026-06-24
+
+### Added
+
+- **Integrated session cleanup.** GLPI's Symfony framework creates a PHP session file for every API request (even stateless Bearer-token calls). Without cleanup, these files exhaust the filesystem's inodes and crash GLPI. New `glpi.session_dir` config option enables automatic cleanup after each polling cycle. The daemon deletes session files older than `session_max_age` minutes (default: 2x polling interval). Requires write access to GLPI's session directory (root or www-data group).
+
+- **Persistent ticket ID cache.** `ProcessedState` now stores `known_ticket_ids` (all ticket IDs ever discovered) and `highest_probed_id` (highest ID ever probed). This eliminates the full-range downward scan on subsequent polling cycles — the daemon only re-fetches IDs it knows exist, reducing API requests from ~518 to ~119 per cycle (77% reduction).
+
+- **Dynamic upward probe limit.** The upward probe uses a large limit (500) on first run to bridge gaps from service outages, but a small limit (20) on subsequent runs since it starts from `highest_probed_id + 1` instead of re-scanning known-empty ranges. This prevents creating hundreds of GLPI session files per polling cycle.
+
+- **Token cache cookie persistence.** OAuth2 token cache file now also stores HTTP session cookies for cross-process reuse (currently a no-op since GLPI's API doesn't set cookies for Bearer-token requests, but future-proof).
+
 ## [0.3.0] — 2026-06-22
 
 ### Fixed

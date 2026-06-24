@@ -177,6 +177,8 @@ logging:
 | `glpi.client_secret` | OAuth2 Client Secret | — |
 | `glpi.username` | GLPI 登录用户名（oauth2_password） | — |
 | `glpi.password` | GLPI 登录密码（oauth2_password） | — |
+| `glpi.session_dir` | GLPI session 目录路径，用于自动清理（见下方说明） | `""`（禁用） |
+| `glpi.session_max_age` | session 文件最大保留时间（分钟） | `2 × polling.interval` |
 | `ollama.api_url` | Ollama API 地址 | `http://localhost:11434` |
 | `ollama.model` | 翻译模型 | `kaelri/hy-mt2:1.8b` |
 | `ollama.timeout` | 请求超时（秒） | `60` |
@@ -244,6 +246,85 @@ glpi-followup-translate --remove-service      # 卸载
 | Linux | systemd |
 | Windows | 任务计划程序 |
 | macOS | launchd |
+
+## Session 清理（GLPI inode 耗尽防护）
+
+GLPI 的 Symfony 框架会为**每个 API 请求**创建一个 PHP session 文件——即使是无状态的 Bearer token 请求也不例外。如果不清理，这些文件会持续累积，最终耗尽文件系统的 inode，导致 GLPI 崩溃。
+
+配置 `glpi.session_dir` 后，守护进程会在每轮轮询结束后**自动清理**超过 `session_max_age` 分钟的 session 文件。
+
+### 配置步骤
+
+**第一步：检查权限**
+
+守护进程需要对 GLPI 的 session 目录（通常为 `/var/lib/glpi/_sessions`，属主 `www-data:www-data`）有写权限。
+
+```bash
+# 查看目录权限
+ls -ld /var/lib/glpi/_sessions
+# drwxr-xr-x 2 www-data www-data ... /var/lib/glpi/_sessions
+
+# 查看守护进程运行用户
+ps aux | grep glpi-followup-translate
+```
+
+| 守护进程运行用户 | 能否清理 session？ | 需要的操作 |
+|-----------------|-------------------|-----------|
+| `root` | ✅ 可以 | 无需操作 — root 绕过文件权限检查 |
+| `www-data` | ✅ 可以 | 无需操作 — 与 session 文件同属主 |
+| 其他用户（如 `qais`） | ❌ 不可以 | 见第二步 |
+
+**第二步：授权（如需要）**
+
+如果守护进程以非 root、非 www-data 用户运行，需要将其加入 `www-data` 组：
+
+```bash
+# 将当前用户加入 www-data 组
+sudo usermod -aG www-data $(whoami)
+
+# 授予组写权限
+sudo chmod 775 /var/lib/glpi/_sessions
+
+# 重启守护进程使权限生效
+sudo systemctl restart glpi-translate.service
+```
+
+**第三步：配置**
+
+在 `config.yaml` 中添加：
+
+```yaml
+glpi:
+  # ... 已有配置 ...
+  session_dir: "/var/lib/glpi/_sessions"
+  # session_max_age: 30   # 可选，默认 = 2 × polling.interval
+```
+
+**第四步：验证**
+
+```bash
+# 运行前查看 session 数量
+ls /var/lib/glpi/_sessions | wc -l
+
+# 运行几分钟后再查看
+ls /var/lib/glpi/_sessions | wc -l
+# 应该保持稳定，不再持续增长
+```
+
+### 工作原理
+
+1. 每轮轮询，守护进程向 GLPI 发送约 119 个 API 请求
+2. 每个请求在 GLPI 服务器上创建一个 PHP session 文件
+3. 轮询结束后，守护进程删除超过 `session_max_age` 的 session 文件
+4. 结果：session 数量保持稳定，不会无限增长
+
+### 故障排除
+
+| 现象 | 原因 | 解决方法 |
+|------|------|---------|
+| 日志中出现 `Permission denied` | 守护进程用户无权写入 session 目录 | 见上方第二步 |
+| session 数量仍在增长 | `session_dir` 未配置或路径错误 | 检查 `config.yaml` |
+| 清理未执行 | 守护进程未使用最新版本 | `pip install --upgrade glpi-followup-translate` |
 
 ## 项目结构
 
