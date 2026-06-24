@@ -14,6 +14,14 @@ class GlpiConfig:
     username: str = ""
     password: str = ""
     auth_method: str = "oauth2_password"  # "oauth2_password" or "app_token"
+    # Path to GLPI's PHP session directory on the local filesystem.
+    # When set, the daemon cleans stale session files after each polling
+    # cycle to prevent inode exhaustion. Only works when the daemon runs
+    # on the same machine as GLPI. Leave empty to disable.
+    session_dir: str = ""
+    # Maximum age (in minutes) for session files before cleanup.
+    # Defaults to 2x polling interval. Only used when session_dir is set.
+    session_max_age: int = 0
 
 
 @dataclass
@@ -92,6 +100,8 @@ def load_config(config_path: str = None) -> AppConfig:
             username=raw["glpi"].get("username", ""),
             password=raw["glpi"].get("password", ""),
             auth_method=raw["glpi"].get("auth_method", "oauth2_password"),
+            session_dir=raw["glpi"].get("session_dir", ""),
+            session_max_age=int(raw["glpi"].get("session_max_age", 0)),
         ),
         ollama=OllamaConfig(
             api_url=raw.get("ollama", {}).get("api_url", "http://localhost:11434"),

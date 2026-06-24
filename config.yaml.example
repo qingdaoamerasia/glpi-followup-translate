@@ -20,6 +20,17 @@ glpi:
   username: "your_glpi_username"
   password: "your_glpi_password"
 
+  # Session cleanup (optional, prevents inode exhaustion)
+  # Path to GLPI's PHP session directory on the LOCAL filesystem.
+  # When set, the daemon automatically cleans stale session files after
+  # each polling cycle. Only works when the daemon runs on the same
+  # machine as GLPI. Leave empty or omit to disable.
+  # session_dir: "/var/lib/glpi/_sessions"
+  #
+  # Maximum age (minutes) for session files before cleanup.
+  # Defaults to 2x polling interval if not set. Only used with session_dir.
+  # session_max_age: 30
+
 ollama:
   # Ollama API base URL
   api_url: "http://localhost:11434"

@@ -1,0 +1,13 @@
+# GLPI session file cleanup cron job
+# Install: sudo cp glpi-session-cleanup.cron /etc/cron.d/glpi-session-cleanup
+#
+# Runs every 30 minutes to clean stale PHP session files.
+# Adjust MAX_AGE based on your polling interval (default: 60 minutes).
+# If your translation daemon polls every 60s, sessions from a single
+# cycle are used for ~1 second each, so 30-minute cleanup is very safe.
+
+# Clean sessions older than 30 minutes, every 30 minutes
+*/30 * * * * root /usr/local/bin/glpi-session-cleanup.sh --max-age 30 2>&1 | tail -1 >> /var/log/glpi-session-cleanup.log
+
+# Alternative: use tmpwatch (install with: apt install tmpwatch)
+# */30 * * * * root tmpwatch -m 30m /var/lib/glpi/_sessions

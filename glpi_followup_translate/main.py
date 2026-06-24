@@ -1542,6 +1542,54 @@ def run_once(
     return stats
 
 
+def cleanup_glpi_sessions(config: AppConfig) -> None:
+    """Clean stale GLPI PHP session files to prevent inode exhaustion.
+
+    GLPI's Symfony framework creates a PHP session file for every API
+    request (even stateless Bearer-token calls). Without cleanup, these
+    files accumulate and eventually exhaust the filesystem's inodes.
+
+    This function removes session files older than ``session_max_age``
+    minutes from ``session_dir``. It is called after each polling cycle
+    when the config has ``glpi.session_dir`` set.
+
+    Requires the daemon to run on the same machine as GLPI.
+    """
+    session_dir = config.glpi.session_dir
+    if not session_dir or not os.path.isdir(session_dir):
+        return
+
+    max_age = config.glpi.session_max_age
+    if max_age <= 0:
+        # Default to 2x polling interval (sessions from a single cycle
+        # are used for ~1 second, so 2x is very safe).
+        max_age = max(config.polling.interval * 2 // 60, 5)  # at least 5 minutes
+
+    try:
+        import glob
+        import time
+
+        cutoff = time.time() - (max_age * 60)
+        pattern = os.path.join(session_dir, "sess_*")
+        removed = 0
+
+        for path in glob.glob(pattern):
+            try:
+                if os.path.getmtime(path) < cutoff:
+                    os.unlink(path)
+                    removed += 1
+            except OSError:
+                continue  # file vanished or permission denied
+
+        if removed > 0:
+            logger.info(
+                "Session cleanup: removed %d stale file(s) from %s (max age %dm)",
+                removed, session_dir, max_age,
+            )
+    except Exception as e:
+        logger.debug("Session cleanup failed: %s", e)
+
+
 def daemon_loop(config: AppConfig) -> None:
     """Main daemon loop - polls for new items periodically."""
     global _shutdown
@@ -1589,6 +1637,9 @@ def daemon_loop(config: AppConfig) -> None:
             )
         except Exception as e:
             logger.error("Error during translation pass: %s", e, exc_info=True)
+
+        # Clean stale GLPI session files after each pass
+        cleanup_glpi_sessions(config)
 
         # Sleep with interrupt check
         for _ in range(config.polling.interval):
