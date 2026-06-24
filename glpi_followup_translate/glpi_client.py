@@ -49,6 +49,11 @@ class GlpiClient:
         # Persisted via ProcessedState so the daemon avoids re-probing IDs
         # that were already discovered in a previous pass.
         self._cached_max_ticket_id: int = 0
+        # Set of all ticket IDs known to exist, discovered during previous
+        # ID scans. Used to skip the full-range downward scan on subsequent
+        # passes — instead of scanning every ID from max to 1 (hundreds of
+        # 404 requests), we only re-check IDs we know exist.
+        self._known_ticket_ids: set[int] = set()
         # Token cache file for cross-process token reuse. When None, caching
         # is disabled (used by unit tests that bypass __init__).
         self.token_cache_file: Optional[str] = token_cache_file
@@ -548,17 +553,33 @@ class GlpiClient:
         )
 
         # ------------------------------------------------------------------
-        # Phase 2: Downward scan — fill in deleted-ID holes from true_max_id
-        # down to 1.
+        # Phase 2: Downward scan — re-fetch known-existing tickets that
+        # the list API didn't return, and discover any new ones.
         # ------------------------------------------------------------------
         downward_found = 0
 
-        logger.info(
-            "Downward scan starting from id %d down to 1",
-            true_max_id,
-        )
+        # On the first run _known_ticket_ids is empty, so we scan the full
+        # range. On subsequent runs we only re-check IDs we already know
+        # exist (skipping the hundreds of 404s from deleted-ID gaps).
+        known_ids = getattr(self, "_known_ticket_ids", set())
+        if known_ids:
+            # Only re-fetch known-existing IDs not already in seed
+            ids_to_check = sorted(known_ids - seen_ids, reverse=True)
+            logger.info(
+                "Downward scan: re-fetching %d known-existing ticket(s) "
+                "not in seed (cached %d total)",
+                len(ids_to_check),
+                len(known_ids),
+            )
+        else:
+            # First run: scan the full range to discover all IDs
+            ids_to_check = list(range(true_max_id, 0, -1))
+            logger.info(
+                "Downward scan starting from id %d down to 1 (first run)",
+                true_max_id,
+            )
 
-        for ticket_id in range(true_max_id, 0, -1):
+        for ticket_id in ids_to_check:
             if requests_made >= MAX_REQUESTS:
                 logger.warning(
                     "Downward scan hit total request safety cap of %d; "
@@ -611,9 +632,10 @@ class GlpiClient:
             downward_found,
             len(tickets),
         )
-        # Persist the discovered true_max_id so the next scan can skip
-        # re-probing the IDs between seed_max_id and true_max_id.
+        # Persist the discovered true_max_id and known-existing IDs so the
+        # next scan can skip re-probing deleted-ID gaps.
         self._cached_max_ticket_id = true_max_id
+        self._known_ticket_ids = seen_ids
         return tickets
 
     def get_ticket(self, ticket_id: int) -> Dict:
