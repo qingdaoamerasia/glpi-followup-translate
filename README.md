@@ -179,6 +179,8 @@ logging:
 | `glpi.client_secret` | OAuth2 Client Secret | — |
 | `glpi.username` | GLPI login username (oauth2_password) | — |
 | `glpi.password` | GLPI login password (oauth2_password) | — |
+| `glpi.session_dir` | GLPI session directory for auto-cleanup (see below) | `""` (disabled) |
+| `glpi.session_max_age` | Max age in minutes before cleanup | `2 × polling.interval` |
 | `ollama.api_url` | Ollama API URL | `http://localhost:11434` |
 | `ollama.model` | Translation model | `kaelri/hy-mt2:1.8b` |
 | `ollama.timeout` | Request timeout (seconds) | `60` |
@@ -251,6 +253,85 @@ glpi-followup-translate --remove-service      # uninstall
 | Linux | systemd |
 | Windows | Task Scheduler |
 | macOS | launchd |
+
+## Session Cleanup (GLPI Inode Exhaustion)
+
+GLPI's Symfony framework creates a PHP session file for **every API request** — even stateless Bearer-token calls. Without cleanup, these files accumulate and exhaust the filesystem's inodes, crashing GLPI.
+
+The daemon includes **automatic session cleanup** when `glpi.session_dir` is configured. After each polling cycle, it deletes session files older than `session_max_age` minutes.
+
+### Setup
+
+**Step 1: Check permissions**
+
+The daemon needs write access to GLPI's session directory (typically `/var/lib/glpi/_sessions`, owned by `www-data:www-data`).
+
+```bash
+# Check directory ownership and permissions
+ls -ld /var/lib/glpi/_sessions
+# drwxr-xr-x 2 www-data www-data ... /var/lib/glpi/_sessions
+
+# Check what user your daemon runs as
+ps aux | grep glpi-followup-translate
+```
+
+| Daemon runs as | Can delete sessions? | Action needed |
+|---------------|---------------------|---------------|
+| `root` | ✅ Yes | None — root bypasses file permissions |
+| `www-data` | ✅ Yes | None — same owner as session files |
+| Other user (e.g. `qais`) | ❌ No | See Step 2 |
+
+**Step 2: Grant permissions (if needed)**
+
+If your daemon runs as a non-root, non-www-data user, add it to the `www-data` group:
+
+```bash
+# Add daemon user to www-data group
+sudo usermod -aG www-data $(whoami)
+
+# Grant group write access to session directory
+sudo chmod 775 /var/lib/glpi/_sessions
+
+# Restart daemon to pick up new group
+sudo systemctl restart glpi-translate.service
+```
+
+**Step 3: Configure**
+
+Add to your `config.yaml`:
+
+```yaml
+glpi:
+  # ... existing config ...
+  session_dir: "/var/lib/glpi/_sessions"
+  # session_max_age: 30   # optional, default = 2x polling interval
+```
+
+**Step 4: Verify**
+
+```bash
+# Check session count before
+ls /var/lib/glpi/_sessions | wc -l
+
+# Run daemon for a few minutes, then check again
+ls /var/lib/glpi/_sessions | wc -l
+# Should be stable, not growing
+```
+
+### How It Works
+
+1. Each polling cycle, the daemon makes ~119 API requests to GLPI
+2. Each request creates a PHP session file on the GLPI server
+3. After the cycle, the daemon deletes session files older than `session_max_age`
+4. Net result: session count stays bounded instead of growing indefinitely
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `Permission denied` in logs | Daemon user can't write to session dir | See Step 2 above |
+| Sessions still growing | `session_dir` not configured or wrong path | Check `config.yaml` |
+| Cleanup not running | Daemon not using latest code | `pip install --upgrade glpi-followup-translate` |
 
 ## Project Structure
 
