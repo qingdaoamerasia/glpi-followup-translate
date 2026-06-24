@@ -90,6 +90,7 @@ cp config.yaml.example config.yaml
 # Edit config.yaml with your GLPI credentials
 
 # Run
+glpi-followup-translate --version    # check version
 glpi-followup-translate              # daemon mode
 glpi-followup-translate --once      # single pass
 glpi-followup-translate --logs      # view recent logs

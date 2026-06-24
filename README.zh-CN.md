@@ -88,6 +88,7 @@ cp config.yaml.example config.yaml
 # 编辑 config.yaml，填入你的 GLPI 凭证
 
 # 运行
+glpi-followup-translate --version    # 查看版本
 glpi-followup-translate              # 守护进程模式
 glpi-followup-translate --once      # 单次执行
 glpi-followup-translate --logs      # 查看最近日志
