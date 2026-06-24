@@ -19,6 +19,7 @@ from langdetect import detect, LangDetectException
 from .config import AppConfig, load_config
 from .glpi_client import GlpiClient
 from .ollama_client import OllamaClient
+from . import __version__
 
 logger = logging.getLogger("glpi_followup_translate")
 
@@ -1838,6 +1839,11 @@ def main():
     """Entry point."""
     parser = argparse.ArgumentParser(
         description="GLPI Followup Translate - Auto-translate ticket followups"
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
     parser.add_argument(
         "-c", "--config",
