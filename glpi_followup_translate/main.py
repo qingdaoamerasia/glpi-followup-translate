@@ -167,6 +167,9 @@ class ProcessedState:
         # Set of all ticket IDs known to exist, from previous ID scans.
         # Used to skip the full-range downward scan (hundreds of 404s).
         self.known_ticket_ids: set[int] = set()
+        # Highest ticket ID ever probed (exists or not). Used to avoid
+        # re-probing the same range every polling cycle.
+        self.highest_probed_id: int = 0
         self._load()
 
     def _load(self) -> None:
@@ -215,6 +218,7 @@ class ProcessedState:
                     self.last_cleanup = data.get("last_cleanup", "")
                     self.known_max_ticket_id = data.get("known_max_ticket_id", 0)
                     self.known_ticket_ids = set(data.get("known_ticket_ids", []))
+                    self.highest_probed_id = data.get("highest_probed_id", 0)
                 logger.info(
                     "Loaded state: %d followups, %d tickets, %d tasks, %d solutions, %d validations",
                     len(self.processed_followups),
@@ -246,6 +250,7 @@ class ProcessedState:
                         "last_cleanup": self.last_cleanup,
                         "known_max_ticket_id": self.known_max_ticket_id,
                         "known_ticket_ids": sorted(self.known_ticket_ids),
+                        "highest_probed_id": self.highest_probed_id,
                     },
                     f,
                 )
@@ -1323,15 +1328,17 @@ def run_once(
 
     # Fetch all tickets by walking the API's 100-item range window.
     try:
-        # Sync the persisted true_max_id and known_ticket_ids cache into
-        # the client so the ID-scan fallback can skip re-probing
-        # already-discovered IDs and deleted-ID gaps.
+        # Sync the persisted true_max_id, known_ticket_ids, and
+        # highest_probed_id cache into the client so the ID-scan fallback
+        # can skip re-probing already-discovered IDs and deleted-ID gaps.
         glpi._cached_max_ticket_id = state.known_max_ticket_id
         glpi._known_ticket_ids = state.known_ticket_ids
+        glpi._highest_probed_id = state.highest_probed_id
         all_tickets = glpi.get_all_tickets(page_size=100)
         # Persist the updated cache back to state for the next run.
         state.known_max_ticket_id = glpi._cached_max_ticket_id
         state.known_ticket_ids = glpi._known_ticket_ids
+        state.highest_probed_id = glpi._highest_probed_id
     except Exception as e:
         logger.error("Failed to fetch tickets: %s", e)
         return stats

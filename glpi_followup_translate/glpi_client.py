@@ -45,6 +45,11 @@ class GlpiClient:
         # passes — instead of scanning every ID from max to 1 (hundreds of
         # 404 requests), we only re-check IDs we know exist.
         self._known_ticket_ids: set[int] = set()
+        # Highest ticket ID ever probed (whether it exists or not). Used to
+        # avoid re-probing IDs that were already checked in a previous cycle.
+        # Without this, the upward probe re-scans the same 500 IDs every
+        # polling cycle, creating ~500 GLPI session files per minute.
+        self._highest_probed_id: int = 0
         # Token cache file for cross-process token reuse. When None, caching
         # is disabled (used by unit tests that bypass __init__).
         self.token_cache_file: Optional[str] = token_cache_file
@@ -473,16 +478,29 @@ class GlpiClient:
         # ------------------------------------------------------------------
         # Phase 1: Upward probe — discover tickets with IDs above seed_max_id.
         # ------------------------------------------------------------------
-        probe_id = true_max_id + 1
+        # Start from the highest ID we've ever probed (not just the highest
+        # existing ID) to avoid re-probing the same IDs every cycle.
+        highest_probed = getattr(self, "_highest_probed_id", 0)
+        probe_id = max(true_max_id, highest_probed) + 1
         consecutive_misses = 0
 
+        # Use a large limit on the first run (to bridge gaps from downtime),
+        # but a small limit on subsequent runs (just checking for new tickets).
+        # This prevents the upward probe from creating hundreds of session
+        # files on the GLPI server every polling cycle.
+        if highest_probed > 0:
+            upward_miss_limit = 20
+        else:
+            upward_miss_limit = UPWARD_PROBE_MISS_LIMIT  # 500
+
         logger.info(
-            "Upward probe starting from id %d (miss limit %d)",
+            "Upward probe starting from id %d (miss limit %d, highest probed %d)",
             probe_id,
-            UPWARD_PROBE_MISS_LIMIT,
+            upward_miss_limit,
+            highest_probed,
         )
 
-        while consecutive_misses < UPWARD_PROBE_MISS_LIMIT:
+        while consecutive_misses < upward_miss_limit:
             if requests_made >= MAX_REQUESTS:
                 logger.warning(
                     "Upward probe hit total request safety cap of %d; "
@@ -528,6 +546,11 @@ class GlpiClient:
             true_max_id,
             requests_made,
         )
+
+        # Persist the highest ID we've probed so the next cycle doesn't
+        # re-probe the same range. probe_id is now one past the last ID
+        # we checked (the loop increments before continuing).
+        self._highest_probed_id = max(probe_id - 1, highest_probed)
 
         # ------------------------------------------------------------------
         # Phase 2: Downward scan — re-fetch known-existing tickets that
