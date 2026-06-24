@@ -1521,8 +1521,8 @@ def run_once(
 
     state.save()
 
-    # Persist HTTP session cookies so the next process start reuses the
-    # same GLPI PHP session instead of creating a new one.
+    # Persist OAuth2 token cache so the next process start reuses it
+    # instead of requesting a new token (which creates a GLPI session).
     glpi._save_token_cache()
 
     logger.info(
