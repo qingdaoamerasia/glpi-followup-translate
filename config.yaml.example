@@ -98,4 +98,8 @@ translation:
 # Logging
 logging:
   level: "INFO"  # DEBUG, INFO, WARNING, ERROR
-  file: "glpi-translate.log"
+  # Log file path. Leave empty for XDG-compliant default location:
+  #   Linux:   ~/.local/state/glpi-followup-translate/glpi-translate.log
+  #   macOS:   ~/Library/Logs/glpi-followup-translate/glpi-translate.log
+  #   Windows: %LOCALAPPDATA%\glpi-followup-translate\Logs\glpi-translate.log
+  # file: ""  # empty = auto-detect (recommended)

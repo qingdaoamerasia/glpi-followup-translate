@@ -16,7 +16,7 @@ from typing import Set, Optional
 
 from langdetect import detect, LangDetectException
 
-from .config import AppConfig, load_config
+from .config import AppConfig, load_config, default_log_path, resolve_log_file
 from .glpi_client import GlpiClient
 from .ollama_client import OllamaClient
 from . import __version__
@@ -108,10 +108,13 @@ def _handle_signal(signum, frame):
     _shutdown = True
 
 
-def setup_logging(config: AppConfig) -> None:
+def setup_logging(config: AppConfig, config_path: str = None) -> None:
     """Configure logging based on config."""
     log_level = getattr(logging, config.logging.level.upper(), logging.INFO)
-    log_file = config.logging.file
+    log_file = resolve_log_file(config.logging.file, config_path)
+
+    # Ensure log directory exists
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
     # Fix Windows console encoding for non-ASCII characters
     if sys.platform == "win32":
@@ -1667,15 +1670,22 @@ def _view_logs(config_path: str = None, lines: int = 50, follow: bool = False) -
     # Resolve log file path from config
     try:
         config = load_config(config_path)
-        log_file = config.logging.file
+        log_file = resolve_log_file(config.logging.file, config_path)
     except FileNotFoundError:
-        # Fallback: try common log file locations
-        for candidate in ["glpi-translate.log", os.path.join(os.getcwd(), "glpi-translate.log")]:
+        # Fallback: try XDG default location, then current directory
+        for candidate in [default_log_path(), os.path.join(os.getcwd(), "glpi-translate.log")]:
             if os.path.exists(candidate):
                 log_file = candidate
                 break
         else:
-            print("Error: Could not find config or log file. Run the tool first to generate logs.")
+            print("Error: Could not find config or log file.")
+            print("Searched in:")
+            print("  1. ./config.yaml  (current directory)")
+            print("  2. ~/.config/glpi-followup-translate/config.yaml")
+            print("  3. <project_root>/config.yaml  (dev mode)")
+            print()
+            print("Fix: run from the config directory, or use:")
+            print("  glpi-followup-translate --logs -c /path/to/config.yaml")
             sys.exit(1)
 
     if not os.path.exists(log_file):
@@ -1889,7 +1899,7 @@ def main():
     if args.remove_service:
         _install_service(remove=True)
         return
-    if args.logs:
+    if args.logs or args.follow:
         _view_logs(config_path=args.config, lines=args.log_lines, follow=args.follow)
         return
 
@@ -1897,7 +1907,7 @@ def main():
     config = load_config(args.config)
 
     # Setup logging
-    setup_logging(config)
+    setup_logging(config, config_path=args.config)
 
     # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, _handle_signal)

@@ -77,55 +77,48 @@ Checked the firewall rules and found that port 3306 was accidentally closed.
 ### 方式 A：pip 安装（推荐）
 
 ```bash
-# 从 PyPI 安装
 pip install glpi-followup-translate
-
-# 拉取翻译模型
 ollama pull kaelri/hy-mt2:1.8b
-
-# 在当前目录创建配置
-cp config.yaml.example config.yaml
-# 编辑 config.yaml，填入你的 GLPI 凭证
-
-# 运行
-glpi-followup-translate --version    # 查看版本
-glpi-followup-translate              # 守护进程模式
-glpi-followup-translate --once      # 单次执行
-glpi-followup-translate --logs      # 查看最近日志
-glpi-followup-translate --logs --follow  # 实时跟踪日志
-glpi-followup-translate -c /path/to/config.yaml  # 指定配置文件
 ```
+
+参见下方[配置说明](#配置说明)，然后：
+
+```bash
+glpi-followup-translate              # 启动守护进程
+glpi-followup-translate --once       # 单次执行后退出
+```
+
+更多命令：[命令行参考](#命令行参考)。
+
+如需 7x24 后台运行：[后台运行](#7x24-后台运行)。
 
 ### 方式 B：开发 / 源码安装
 
 ```bash
-# 克隆仓库
 git clone https://github.com/qingdaoamerasia/glpi-followup-translate.git
 cd glpi-followup-translate
-
-# 可编辑安装（推荐开发使用）
 pip install -e .
-
-# 或仅安装依赖
-pip install -r requirements.txt
-
-# 拉取翻译模型
 ollama pull kaelri/hy-mt2:1.8b
+```
 
-# 配置
-cp config.yaml.example config.yaml
-# 编辑 config.yaml，填入你的 GLPI 凭证
+参见下方[配置说明](#配置说明)，然后：
 
-# 运行
-glpi-followup-translate                 # CLI 命令
-python -m glpi_followup_translate       # 或通过 python 模块
-glpi-followup-translate --once          # 单次执行
-glpi-followup-translate --logs          # 查看最近日志
+```bash
+glpi-followup-translate              # CLI 命令
+python -m glpi_followup_translate    # 或通过 python 模块
+glpi-followup-translate --once       # 单次执行
 ```
 
 ## 配置说明
 
-复制 `config.yaml.example` 为 `config.yaml` 并编辑：
+```bash
+# 推荐：XDG 标准位置（从任何目录运行都能找到）
+mkdir -p ~/.config/glpi-followup-translate
+cp config.yaml.example ~/.config/glpi-followup-translate/config.yaml
+nano ~/.config/glpi-followup-translate/config.yaml
+```
+
+配置搜索顺序：`./config.yaml` → `~/.config/glpi-followup-translate/config.yaml` → `<项目根目录>/config.yaml`。使用 `-c /path/to/config.yaml` 可指定路径。
 
 ```yaml
 glpi:
@@ -167,7 +160,7 @@ translation:
 
 logging:
   level: "INFO"
-  file: "glpi-translate.log"
+  # file: ""  # 留空 = XDG 默认位置（推荐）
 ```
 
 | 配置项 | 说明 | 默认值 |
@@ -190,7 +183,7 @@ logging:
 | `translation.target_language` | 源→目标语言映射 | `zh-cn→en, zh→en, en→zh-cn` |
 | `translation.glossary` | 按方向分组的术语表，确保专有名词翻译一致 | `{}`（空） |
 | `logging.level` | 日志级别（`DEBUG`、`INFO`、`WARNING`、`ERROR`） | `INFO` |
-| `logging.file` | 日志文件路径 | `glpi-translate.log` |
+| `logging.file` | 日志文件路径（留空 = XDG 默认位置） | `""`（自动） |
 
 ## 测试
 
@@ -247,6 +240,24 @@ glpi-followup-translate --remove-service      # 卸载
 | Linux | systemd |
 | Windows | 任务计划程序 |
 | macOS | launchd |
+
+## 命令行参考
+
+```
+glpi-followup-translate [选项]
+```
+
+| 参数 | 说明 |
+|------|------|
+| *(无)* | 启动守护进程 — 每隔 `polling.interval` 秒轮询一次 |
+| `--once` | 单次执行翻译后退出 |
+| `--version` | 打印版本号并退出 |
+| `--logs` | 查看最近日志条目并退出 |
+| `--log-lines N` | 显示的日志行数（默认：50） |
+| `--follow` | 持续跟踪日志文件（隐含 `--logs`） |
+| `-c PATH` | 指定 config.yaml 路径（默认：自动检测） |
+| `--install-service` | 安装为后台服务（systemd/任务计划程序/launchd） |
+| `--remove-service` | 卸载后台服务 |
 
 ## Session 清理（GLPI inode 耗尽防护）
 

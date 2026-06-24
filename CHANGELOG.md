@@ -12,7 +12,7 @@ All notable changes to this project are documented in this file.
 
 - **Dynamic upward probe limit.** The upward probe uses a large limit (500) on first run to bridge gaps from service outages, but a small limit (20) on subsequent runs since it starts from `highest_probed_id + 1` instead of re-scanning known-empty ranges. This prevents creating hundreds of GLPI session files per polling cycle.
 
-- **Token cache cookie persistence.** OAuth2 token cache file now also stores HTTP session cookies for cross-process reuse (currently a no-op since GLPI's API doesn't set cookies for Bearer-token requests, but future-proof).
+- **XDG-compliant log directory.** Default log path now follows XDG Base Directory Specification: `~/.local/state/glpi-followup-translate/glpi-translate.log` on Linux. Config and log files are auto-discovered from `~/.config/` and `~/.local/state/` respectively, so the tool works from any directory without `-c` flag.
 
 ## [0.3.0] — 2026-06-22
 

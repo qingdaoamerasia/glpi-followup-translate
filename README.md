@@ -79,55 +79,48 @@ Checked the firewall rules and found that port 3306 was accidentally closed.
 ### Option A: pip install (recommended)
 
 ```bash
-# Install from PyPI
 pip install glpi-followup-translate
-
-# Pull the translation model
 ollama pull kaelri/hy-mt2:1.8b
-
-# Create config in current directory
-cp config.yaml.example config.yaml
-# Edit config.yaml with your GLPI credentials
-
-# Run
-glpi-followup-translate --version    # check version
-glpi-followup-translate              # daemon mode
-glpi-followup-translate --once      # single pass
-glpi-followup-translate --logs      # view recent logs
-glpi-followup-translate --logs --follow  # tail logs in real-time
-glpi-followup-translate -c /path/to/config.yaml  # custom config path
 ```
+
+See [Configuration](#configuration) below, then:
+
+```bash
+glpi-followup-translate              # start daemon
+glpi-followup-translate --once       # single pass and exit
+```
+
+More commands: [CLI Reference](#cli-reference). 
+
+For 24/7 service: [Run 24/7](#run-247-background-service).
 
 ### Option B: Development / source install
 
 ```bash
-# Clone
 git clone https://github.com/qingdaoamerasia/glpi-followup-translate.git
 cd glpi-followup-translate
-
-# Editable install (recommended for development)
 pip install -e .
-
-# Or install dependencies only
-pip install -r requirements.txt
-
-# Pull the translation model
 ollama pull kaelri/hy-mt2:1.8b
+```
 
-# Configure
-cp config.yaml.example config.yaml
-# Edit config.yaml with your GLPI credentials
+See [Configuration](#configuration) below, then:
 
-# Run
-glpi-followup-translate                 # CLI command
-python -m glpi_followup_translate       # or via python module
-glpi-followup-translate --once          # single pass
-glpi-followup-translate --logs          # view recent logs
+```bash
+glpi-followup-translate              # CLI command
+python -m glpi_followup_translate    # or via python module
+glpi-followup-translate --once       # single pass
 ```
 
 ## Configuration
 
-Copy `config.yaml.example` to `config.yaml` and edit:
+```bash
+# Recommended: XDG standard location (works from any directory)
+mkdir -p ~/.config/glpi-followup-translate
+cp config.yaml.example ~/.config/glpi-followup-translate/config.yaml
+nano ~/.config/glpi-followup-translate/config.yaml
+```
+
+Config search order: `./config.yaml` → `~/.config/glpi-followup-translate/config.yaml` → `<project_root>/config.yaml`. Use `-c /path/to/config.yaml` to override.
 
 ```yaml
 glpi:
@@ -169,7 +162,7 @@ translation:
 
 logging:
   level: "INFO"
-  file: "glpi-translate.log"
+  # file: ""  # empty = XDG default (recommended)
 ```
 
 | Option | Description | Default |
@@ -192,7 +185,7 @@ logging:
 | `translation.target_language` | Source→target language mapping | `zh-cn→en, zh→en, en→zh-cn` |
 | `translation.glossary` | Per-direction term mappings for consistent translation | `{}` (empty) |
 | `logging.level` | Log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) | `INFO` |
-| `logging.file` | Log file path | `glpi-translate.log` |
+| `logging.file` | Log file path (empty = XDG default) | `""` (auto) |
 
 ## Testing
 
@@ -254,6 +247,24 @@ glpi-followup-translate --remove-service      # uninstall
 | Linux | systemd |
 | Windows | Task Scheduler |
 | macOS | launchd |
+
+## CLI Reference
+
+```
+glpi-followup-translate [options]
+```
+
+| Flag | Description |
+|------|-------------|
+| *(none)* | Start daemon — polls GLPI every `polling.interval` seconds |
+| `--once` | Run a single translation pass and exit |
+| `--version` | Print version and exit |
+| `--logs` | View recent log entries and exit |
+| `--log-lines N` | Number of log lines to display (default: 50) |
+| `--follow` | Continuously tail the log file (implies `--logs`) |
+| `-c PATH` | Path to config.yaml (default: auto-detect) |
+| `--install-service` | Install as background service (systemd/Task Scheduler/launchd) |
+| `--remove-service` | Remove background service |
 
 ## Session Cleanup (GLPI Inode Exhaustion)
 

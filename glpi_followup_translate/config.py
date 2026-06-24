@@ -1,9 +1,53 @@
 """Configuration loader for GLPI Followup Translate."""
 
 import os
+import sys
 import yaml
 from dataclasses import dataclass, field
 from typing import Dict, List
+
+_APP_NAME = "glpi-followup-translate"
+_LOG_FILENAME = "glpi-translate.log"
+
+
+def default_log_dir() -> str:
+    """Return the XDG-compliant log directory for this application.
+
+    Follows the XDG Base Directory Specification:
+    - Linux:   $XDG_STATE_HOME/glpi-followup-translate/  (~/.local/state/...)
+    - macOS:   ~/Library/Logs/glpi-followup-translate/
+    - Windows: %LOCALAPPDATA%\\glpi-followup-translate\\Logs\\
+    """
+    if sys.platform == "darwin":
+        return os.path.join(os.path.expanduser("~"), "Library", "Logs", _APP_NAME)
+    elif sys.platform == "win32":
+        local = os.environ.get("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local"))
+        return os.path.join(local, _APP_NAME, "Logs")
+    else:
+        # Linux / other Unix — XDG_STATE_HOME
+        state_home = os.environ.get("XDG_STATE_HOME", os.path.join(os.path.expanduser("~"), ".local", "state"))
+        return os.path.join(state_home, _APP_NAME)
+
+
+def default_log_path() -> str:
+    """Return the full default log file path."""
+    return os.path.join(default_log_dir(), _LOG_FILENAME)
+
+
+def resolve_log_file(log_file: str, config_path: str = None) -> str:
+    """Resolve a log file path to an absolute path.
+
+    Empty string → XDG default.  Relative path → resolved against config
+    directory (or cwd if no config path given).
+    """
+    if not log_file:
+        return default_log_path()
+    if os.path.isabs(log_file):
+        return log_file
+    config_dir = os.path.dirname(os.path.abspath(
+        config_path or os.path.join(os.getcwd(), "config.yaml")
+    ))
+    return os.path.join(config_dir, log_file)
 
 
 @dataclass
@@ -50,7 +94,8 @@ class TranslationConfig:
 @dataclass
 class LoggingConfig:
     level: str = "INFO"
-    file: str = "glpi-translate.log"
+    # Log file path. Empty = XDG default (see default_log_dir()).
+    file: str = ""
 
 
 @dataclass
@@ -65,28 +110,47 @@ class AppConfig:
 def load_config(config_path: str = None) -> AppConfig:
     """Load configuration from YAML file.
 
+    Search order when config_path is None:
+    1. ./config.yaml  (current working directory)
+    2. ~/.config/glpi-followup-translate/config.yaml  (XDG standard)
+    3. <project_root>/config.yaml  (dev mode)
+
     Args:
-        config_path: Path to config.yaml. Defaults to same directory as this file.
+        config_path: Path to config.yaml. Defaults to auto-detect.
 
     Returns:
         AppConfig instance with all settings loaded.
     """
     if config_path is None:
-        # Priority 1: config.yaml in current working directory (pip-installed usage)
+        # Priority 1: config.yaml in current working directory
         cwd_path = os.path.join(os.getcwd(), "config.yaml")
         if os.path.exists(cwd_path):
             config_path = cwd_path
         else:
-            # Priority 2: config.yaml in project root (dev mode: python -m glpi_followup_translate)
-            config_path = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                "config.yaml",
+            # Priority 2: XDG standard user config location
+            xdg_path = os.path.join(
+                os.path.expanduser("~"),
+                ".config", "glpi-followup-translate", "config.yaml",
             )
+            if os.path.exists(xdg_path):
+                config_path = xdg_path
+            else:
+                # Priority 3: config.yaml in project root (dev mode)
+                config_path = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    "config.yaml",
+                )
 
     if not os.path.exists(config_path):
         raise FileNotFoundError(
             f"Configuration file not found: {config_path}\n"
-            "Copy config.yaml.example to config.yaml and fill in your values."
+            "Searched in:\n"
+            "  1. ./config.yaml  (current directory)\n"
+            "  2. ~/.config/glpi-followup-translate/config.yaml  (XDG standard)\n"
+            "  3. <project_root>/config.yaml  (dev mode)\n"
+            "\n"
+            "Fix: copy config.yaml.example to one of these locations,\n"
+            "or use -c /path/to/config.yaml to specify the path."
         )
 
     with open(config_path, "r", encoding="utf-8") as f:
@@ -128,6 +192,6 @@ def load_config(config_path: str = None) -> AppConfig:
         ),
         logging=LoggingConfig(
             level=raw.get("logging", {}).get("level", "INFO"),
-            file=raw.get("logging", {}).get("file", "glpi-translate.log"),
+            file=raw.get("logging", {}).get("file", ""),
         ),
     )
